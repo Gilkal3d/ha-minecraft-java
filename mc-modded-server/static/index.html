@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MC Modded Server</title>
+<style>
+  :root {
+    --bg: #1c1c1f; --panel: #26262b; --panel2: #2f2f35; --border: #3d3d44;
+    --text: #e8e8ea; --muted: #9a9aa3; --accent: #03a9f4;
+    --green: #4caf50; --red: #f44336; --yellow: #ffb300;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  .badge {
+    padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;
+    background: var(--panel2); border: 1px solid var(--border);
+  }
+  .badge.on  { background: rgba(76,175,80,.15);  color: var(--green); border-color: var(--green); }
+  .badge.off { background: rgba(244,67,54,.12);  color: var(--red);   border-color: var(--red); }
+  .info { color: var(--muted); font-size: 12px; }
+  .spacer { flex: 1; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #00303f; font-weight: 600; }
+  button.danger  { background: rgba(244,67,54,.15); color: var(--red); border-color: var(--red); }
+  button.good    { background: rgba(76,175,80,.15); color: var(--green); border-color: var(--green); }
+  button.sm { padding: 4px 9px; font-size: 12px; }
+  nav { display: flex; gap: 4px; padding: 8px 16px 0; background: var(--panel); border-bottom: 1px solid var(--border); }
+  nav button {
+    border: none; border-radius: 6px 6px 0 0; background: transparent;
+    color: var(--muted); padding: 8px 16px;
+  }
+  nav button.active { background: var(--bg); color: var(--text); font-weight: 600; }
+  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .banner {
+    background: rgba(255,179,0,.12); border: 1px solid var(--yellow); color: var(--yellow);
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 16px;
+  }
+  #console {
+    background: #101013; border: 1px solid var(--border); border-radius: 8px;
+    font: 12px/1.45 ui-monospace, Consolas, monospace; padding: 10px;
+    height: 420px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .cmdrow { display: flex; gap: 8px; margin-top: 10px; }
+  input[type=text], textarea {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 13px; width: 100%;
+  }
+  textarea {
+    font: 12px/1.5 ui-monospace, Consolas, monospace;
+    height: 420px; resize: vertical; white-space: pre; overflow: auto;
+  }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--panel2);
+    border: 1px solid var(--accent); border-radius: 8px; padding: 10px 16px;
+    opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 380px; z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { border-color: var(--red); color: var(--red); }
+  .hidden { display: none !important; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.on { background: var(--green); } .dot.off { background: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⛏️ MC Modded Server</h1>
+  <span id="statusBadge" class="badge">…</span>
+  <span id="loaderInfo" class="info"></span>
+  <span id="playersInfo" class="info"></span>
+  <div class="spacer"></div>
+  <button id="btnStart" class="good" onclick="serverCmd('start')">▶ Iniciar</button>
+  <button id="btnStop" class="danger" onclick="serverCmd('stop')">⏹ Parar</button>
+  <button onclick="serverCmd('restart')">🔄 Reiniciar</button>
+</header>
+
+<nav>
+  <button class="active" data-tab="tabConsole" onclick="showTab(this)">Console</button>
+  <button data-tab="tabProps" onclick="showTab(this)">server.properties</button>
+  <button data-tab="tabWhitelist" onclick="showTab(this)">Whitelist</button>
+  <button data-tab="tabMods" onclick="showTab(this)">Mods</button>
+</nav>
+
+<main>
+  <div id="eulaBanner" class="banner hidden">
+    ⚠️ Você ainda não aceitou a <b>EULA da Mojang</b>. Abra as <b>Configurações do add-on</b>
+    e marque <code>eula: true</code> para o servidor poder iniciar.
+  </div>
+
+  <!-- ==================== CONSOLE ==================== -->
+  <section id="tabConsole">
+    <div class="card">
+      <h2>Console do servidor</h2>
+      <div id="console"></div>
+      <div class="cmdrow">
+        <input type="text" id="cmdInput" placeholder="Comando sem a barra… ex.: say ola, list, time set day"
+               onkeydown="if(event.key==='Enter')sendCmd()">
+        <button class="primary" onclick="sendCmd()">Enviar</button>
+        <button onclick="loadConsole()">Atualizar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== PROPERTIES ==================== -->
+  <section id="tabProps" class="hidden">
+    <div class="card">
+      <h2>server.properties</h2>
+      <p class="muted" style="margin-top:0">
+        Edite livremente e salve. O servidor precisa estar <b>parado</b> para aplicar.
+        Opções novas exigem reiniciar o add-on (loader, versão, memória, mods do Modrinth).
+      </p>
+      <textarea id="propsText" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" onclick="saveProps(false)">💾 Salvar</button>
+        <button onclick="saveProps(true)">💾 Salvar e reiniciar servidor</button>
+        <button onclick="loadProps()">Recarregar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== WHITELIST ==================== -->
+  <section id="tabWhitelist" class="hidden">
+    <div class="card">
+      <h2>Whitelist <span id="wlState" class="muted" style="font-weight:400"></span></h2>
+      <div class="row" style="margin-bottom:12px">
+        <input type="text" id="wlName" placeholder="Nome do jogador (Xbox/Java)"
+               style="max-width:280px" onkeydown="if(event.key==='Enter')wlAdd()">
+        <button class="primary" onclick="wlAdd()">+ Adicionar</button>
+        <button onclick="loadWhitelist()">Atualizar</button>
+      </div>
+      <table>
+        <thead><tr><th>Nome</th><th>UUID</th><th></th></tr></thead>
+        <tbody id="wlBody"></tbody>
+      </table>
+      <p class="muted">Ative a whitelist em <i>server.properties</i> → <code>whitelist=true</code>.
+         Com o servidor online, o add-on usa RCON (aplica na hora); offline, edita o
+         <code>whitelist.json</code> direto.</p>
+    </div>
+  </section>
+
+  <!-- ==================== MODS ==================== -->
+  <section id="tabMods" class="hidden">
+    <div class="card">
+      <h2>Instalar do Modrinth <span id="mrInfo" class="muted" style="font-weight:400"></span></h2>
+      <div class="row">
+        <input type="text" id="mrSlug" placeholder="slug do projeto, ex.: lithium, fabric-api, chunky"
+               style="max-width:380px" onkeydown="if(event.key==='Enter')modrinthInstall()">
+        <button class="primary" onclick="modrinthInstall()">⬇ Instalar</button>
+      </div>
+      <p class="muted">O slug é a última parte da URL do projeto (modrinth.com/mods/<b>lithium</b>).
+         A versão compatível com o seu loader/versão do Minecraft é escolhida automaticamente,
+         junto com as dependências obrigatórias.</p>
+    </div>
+    <div class="card">
+      <h2>Mods instalados</h2>
+      <div class="row" style="margin-bottom:12px">
+        <input type="file" id="modFile" accept=".jar" multiple>
+        <button class="primary" onclick="uploadMods()">⬆ Enviar .jar</button>
+        <button onclick="loadMods()">Atualizar</button>
+        <span class="muted">Alterações de mods exigem reiniciar o servidor (botão Reiniciar no topo).</span>
+      </div>
+      <table>
+        <thead><tr><th>Arquivo</th><th>Tamanho</th><th style="width:220px"></th></tr></thead>
+        <tbody id="modsBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let serverRunning = false;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+function toast(msg, err) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => t.className = 'toast', 4000);
+}
+
+function fmtSize(b) {
+  if (b > 1048576) return (b / 1048576).toFixed(1) + ' MB';
+  if (b > 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+
+function showTab(btn) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('main section').forEach(s => s.classList.add('hidden'));
+  $(btn.dataset.tab).classList.remove('hidden');
+  if (btn.dataset.tab === 'tabConsole') loadConsole();
+  if (btn.dataset.tab === 'tabProps') loadProps();
+  if (btn.dataset.tab === 'tabWhitelist') loadWhitelist();
+  if (btn.dataset.tab === 'tabMods') loadMods();
+}
+
+/* ---------------- status ---------------- */
+async function loadStatus() {
+  try {
+    const s = await api('api/status');
+    serverRunning = s.running;
+    $('statusBadge').textContent = s.running ? 'ONLINE' : (s.stopped_by_user ? 'PARADO' : 'AGUARDANDO');
+    $('statusBadge').className = 'badge ' + (s.running ? 'on' : 'off');
+    $('loaderInfo').textContent = `${s.loader || '?'} • MC ${s.version || '?'} • ${s.memory || ''}`;
+    $('playersInfo').textContent = s.players
+      ? `👥 ${s.players.online}/${s.players.max}` + (s.players.names ? ` — ${s.players.names}` : '')
+      : '';
+    $('btnStart').disabled = s.running || (!s.eula);
+    $('btnStop').disabled = !s.running;
+    $('eulaBanner').classList.toggle('hidden', s.eula);
+  } catch (e) { /* add-on reiniciando */ }
+}
+
+async function serverCmd(cmd) {
+  try { await api(`api/server/${cmd}`, { method: 'POST' }); toast('Comando enviado…'); }
+  catch (e) { toast(e.message, true); }
+  setTimeout(loadStatus, 1500);
+}
+
+/* ---------------- console ---------------- */
+let lastLog = '';
+async function loadConsole() {
+  try {
+    const d = await api('api/console?lines=300');
+    const text = d.lines.join('\n');
+    if (text !== lastLog) {
+      const el = $('console');
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+      el.textContent = text || '(console vazio — inicie o servidor)';
+      lastLog = text;
+      if (atBottom) el.scrollTop = el.scrollHeight;
+    }
+  } catch {}
+}
+
+async function sendCmd() {
+  const inp = $('cmdInput');
+  const cmd = inp.value.trim();
+  if (!cmd) return;
+  inp.value = '';
+  try { await api('api/console', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ cmd }) }); }
+  catch (e) { toast(e.message, true); }
+  setTimeout(loadConsole, 600);
+}
+
+/* ---------------- properties ---------------- */
+async function loadProps() {
+  try {
+    const d = await api('api/properties');
+    $('propsText').value = d.content ||
+      '# arquivo server.properties ainda não existe — o servidor gera um no primeiro start\n';
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveProps(restart) {
+  try {
+    await api('api/properties' + (restart ? '?restart=1' : ''), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ content: $('propsText').value })
+    });
+    toast(restart ? 'Salvo! Reiniciando o servidor…' : 'Salvo! Reinicie o servidor para aplicar.');
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- whitelist ---------------- */
+async function loadWhitelist() {
+  try {
+    const d = await api('api/whitelist');
+    $('wlState').textContent = d.enabled ? '— ATIVADA' : '— desativada (whitelist=false)';
+    const body = $('wlBody');
+    body.innerHTML = '';
+    if (!d.entries.length) {
+      body.innerHTML = '<tr><td colspan="3" class="muted">Nenhum jogador na whitelist.</td></tr>';
+      return;
+    }
+    for (const e of d.entries) {
+      const tr = document.createElement('tr');
+      const tdN = document.createElement('td'); tdN.textContent = e.name;
+      const tdU = document.createElement('td'); tdU.className = 'muted';
+      tdU.style.font = '11px ui-monospace, monospace'; tdU.textContent = e.uuid;
+      const tdA = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'danger sm'; btn.textContent = 'Remover';
+      btn.onclick = () => wlRemove(e.name);
+      tdA.appendChild(btn);
+      tr.append(tdN, tdU, tdA); body.appendChild(tr);
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function wlAdd() {
+  const name = $('wlName').value.trim();
+  if (!name) return;
+  try {
+    const d = await api(`api/whitelist/add?name=${encodeURIComponent(name)}`, { method: 'POST' });
+    toast(d.output || `Jogador ${name} adicionado!`);
+    $('wlName').value = '';
+    loadWhitelist();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function wlRemove(name) {
+  try {
+    const d = await api(`api/whitelist/remove?name=${encodeURIComponent(name)}`, { method: 'POST' });
+    toast(d.output || `Jogador ${name} removido.`);
+    loadWhitelist();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- mods ---------------- */
+async function loadMods() {
+  try {
+    const d = await api('api/mods');
+    $('mrInfo').textContent = `— loader ${d.loader} • MC ${d.version}`;
+    const body = $('modsBody');
+    body.innerHTML = '';
+    if (!d.mods.length) {
+      body.innerHTML = '<tr><td colspan="3" class="muted">Nenhum mod instalado.</td></tr>';
+      return;
+    }
+    for (const m of d.mods) {
+      const tr = document.createElement('tr');
+      const tdN = document.createElement('td');
+      tdN.innerHTML = `<span class="dot ${m.enabled ? 'on' : 'off'}"></span>`;
+      tdN.appendChild(document.createTextNode(m.name));
+      const tdS = document.createElement('td'); tdS.className = 'muted';
+      tdS.textContent = fmtSize(m.size);
+      const tdA = document.createElement('td');
+      tdA.className = 'row';
+      const bt = document.createElement('button');
+      bt.className = 'sm'; bt.textContent = m.enabled ? 'Desativar' : 'Ativar';
+      bt.onclick = () => modAction('toggle', m.name);
+      const bd = document.createElement('button');
+      bd.className = 'danger sm'; bd.textContent = 'Excluir';
+      bd.onclick = () => modAction('delete', m.name);
+      tdA.append(bt, bd);
+      tr.append(tdN, tdS, tdA); body.appendChild(tr);
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function modAction(action, name) {
+  try {
+    await api(`api/mods/${action}?name=${encodeURIComponent(name)}`, { method: 'POST' });
+    loadMods();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function uploadMods() {
+  const files = $('modFile').files;
+  if (!files.length) return toast('Selecione ao menos um .jar', true);
+  const fd = new FormData();
+  for (const f of files) fd.append('file', f, f.name);
+  try {
+    const d = await api('api/mods/upload', { method: 'POST', body: fd });
+    toast(d.results.join(' • '));
+    $('modFile').value = '';
+    loadMods();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function modrinthInstall() {
+  const slug = $('mrSlug').value.trim();
+  if (!slug) return;
+  try {
+    toast('Baixando do Modrinth…');
+    const d = await api('api/modrinth', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ slug }) });
+    toast('Instalado: ' + d.installed);
+    $('mrSlug').value = '';
+    loadMods();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- loop ---------------- */
+loadStatus();
+setInterval(loadStatus, 5000);
+setInterval(() => { if (!$('tabConsole').classList.contains('hidden')) loadConsole(); }, 3000);
+</script>
+</body>
+</html>
