@@ -12,6 +12,9 @@ Servidor Minecraft Java moddável com interface gráfica:
 
 - **Escolha o loader**: Fabric, NeoForge, Forge, Paper, Purpur ou Vanilla
 - **Escolha a versão do Minecraft**: qualquer versão oficial (ex.: `1.21.4`, `LATEST`, snapshots)
+- **Aba Configurações em português**: cada opção do servidor explicando para que
+  serve (loader, versão, RAM, MOTD, dificuldade, modo de jogo, PvP, whitelist,
+  ops, mods…), salva e reinicia em um clique
 - **Console ao vivo** + envio de comandos (via RCON)
 - **Editor do `server.properties`** direto no painel
 - **Gerenciador de whitelist** (adiciona/remove jogadores, gera UUID automaticamente)

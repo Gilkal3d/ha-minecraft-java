@@ -26,7 +26,8 @@ from pathlib import Path
 DATA = Path("/data")
 MODS_DIR = DATA / "mods"
 STATIC_DIR = Path("/panel/static")
-OPTIONS_FILE = DATA / "options.json"
+OPTIONS_FILE = DATA / "options.json"    # formulário do Home Assistant (padrões)
+CUSTOM_FILE = DATA / "custom.json"      # aba "Configurações" do painel (prioridade)
 RCON_FILE = DATA / ".rcon.json"
 FLAG_FILE = DATA / ".server_stopped"
 LOG_FILE = DATA / "logs" / "latest.log"
@@ -39,11 +40,28 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 # ---------------------------------------------------------------- utilidades
-def options():
+def _read_json(path):
     try:
-        return json.loads(OPTIONS_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def options():
+    """Configuração efetiva: options do HA como base, custom.json por cima."""
+    merged = _read_json(OPTIONS_FILE)
+    merged.update(_read_json(CUSTOM_FILE))
+    return merged
+
+
+# Chaves editáveis pela aba "Configurações" do painel
+SET_KEYS_STR = ["loader", "minecraft_version", "memory", "motd", "difficulty",
+                "gamemode", "level_name", "level_type", "rcon_password"]
+SET_KEYS_BOOL = ["eula", "aikar_flags", "online_mode", "pvp", "allow_nether",
+                 "enable_command_block"]
+SET_KEYS_INT = ["max_players", "view_distance"]
+SET_KEYS_LIST = ["whitelist", "ops", "modrinth_projects"]
+SET_KEYS = SET_KEYS_STR + SET_KEYS_BOOL + SET_KEYS_INT + SET_KEYS_LIST
 
 
 def rcon_password():
@@ -279,6 +297,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/status":
                 return self.api_status()
+            if path == "/api/settings":
+                return self._json({
+                    "settings": options(),
+                    "has_custom": CUSTOM_FILE.exists() and CUSTOM_FILE.stat().st_size > 2,
+                    "ha_defaults": _read_json(OPTIONS_FILE),
+                })
             if path == "/api/console":
                 n = int((query.get("lines") or ["250"])[0])
                 return self._json({"lines": tail_log(n)})
@@ -299,6 +323,47 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path, query = self._path()
         try:
+            if path == "/api/settings":
+                if "reset" in query:
+                    CUSTOM_FILE.unlink(missing_ok=True)
+                    return self._json({"ok": True, "settings": options()})
+                data = json.loads(self._body() or b"{}")
+                incoming = data.get("settings") or {}
+                clean = {}
+                for k in SET_KEYS_STR:
+                    if k in incoming:
+                        clean[k] = str(incoming[k] or "")
+                for k in SET_KEYS_BOOL:
+                    if k in incoming:
+                        clean[k] = bool(incoming[k])
+                for k in SET_KEYS_INT:
+                    if k in incoming:
+                        try:
+                            clean[k] = int(incoming[k])
+                        except (TypeError, ValueError):
+                            pass
+                for k in SET_KEYS_LIST:
+                    if k in incoming:
+                        vals = incoming[k]
+                        if isinstance(vals, str):
+                            vals = [v.strip() for v in vals.splitlines()]
+                        clean[k] = [str(v).strip() for v in vals if str(v).strip()]
+                if not clean:
+                    return self._error("nenhuma configuração enviada")
+                CUSTOM_FILE.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n",
+                                       encoding="utf-8")
+                restarted = False
+                if query.get("restart"):
+                    # o supervisor relê as opções a cada start
+                    if server_running():
+                        try:
+                            rcon_cmd("stop")
+                        except Exception:
+                            pass
+                    FLAG_FILE.unlink(missing_ok=True)
+                    restarted = True
+                return self._json({"ok": True, "settings": options(),
+                                   "restarted": restarted})
             if path == "/api/server/start":
                 FLAG_FILE.unlink(missing_ok=True)
                 return self._json({"ok": True})

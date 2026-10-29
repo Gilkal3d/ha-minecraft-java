@@ -31,15 +31,17 @@ Construído sobre a imagem oficial
 | `modrinth_projects` | Slugs do Modrinth baixados automaticamente a cada start, ex.: `fabric-api`, `lithium`. |
 | `rcon_password` | Senha do RCON. Deixe vazio para gerar uma automaticamente. |
 
-> **Importante:** `loader`, `minecraft_version`, `memory`, `whitelist`, `ops` e
-> `modrinth_projects` são lidos ao iniciar o **add-on**. Depois de alterar, clique
-> em **Parar → Iniciar** (ou Salvar, que reinicia) no add-on.
+> **Prioridade de configuração:** as opções do formulário do add-on são os
+> **padrões**. Tudo que você salvar na aba **Configurações** do painel web
+> (com descrições em português) tem prioridade sobre elas. Para voltar ao
+> formulário do HA, use **Restaurar padrões** nessa aba.
 
 ## Painel web
 
 | Aba | O que faz |
 |---|---|
 | **Console** | Log ao vivo + campo para enviar comandos (RCON). |
+| **Configurações** | Formulário completo em **português**, cada opção explicando para que serve: loader, versão, RAM, MOTD, dificuldade, modo de jogo, PvP, Nether, whitelist, ops, mods do Modrinth, RCON etc. Salva e reinicia o servidor em um clique. |
 | **server.properties** | Editor de texto completo; salva com o servidor parado. |
 | **Whitelist** | Adiciona/remove jogadores; o UUID é resolvido pela API da Mojang (ou UUID offline em servidores `online-mode=false`). |
 | **Mods** | Instala do Modrinth por slug (versão compatível + dependências), envia `.jar`, ativa/desativa/exclui mods. |

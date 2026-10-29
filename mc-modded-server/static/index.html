@@ -82,6 +82,17 @@
   .hidden { display: none !important; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
   .dot.on { background: var(--green); } .dot.off { background: var(--red); }
+  .fld { margin-bottom: 14px; }
+  .fld label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+  .fld .desc { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 18px; }
+  select {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 13px; width: 100%;
+  }
+  .check { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+  .check input { width: auto; }
+  textarea.small { height: 110px; }
 </style>
 </head>
 <body>
@@ -99,6 +110,7 @@
 
 <nav>
   <button class="active" data-tab="tabConsole" onclick="showTab(this)">Console</button>
+  <button data-tab="tabSettings" onclick="showTab(this)">Configurações</button>
   <button data-tab="tabProps" onclick="showTab(this)">server.properties</button>
   <button data-tab="tabWhitelist" onclick="showTab(this)">Whitelist</button>
   <button data-tab="tabMods" onclick="showTab(this)">Mods</button>
@@ -120,6 +132,167 @@
                onkeydown="if(event.key==='Enter')sendCmd()">
         <button class="primary" onclick="sendCmd()">Enviar</button>
         <button onclick="loadConsole()">Atualizar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== CONFIGURAÇÕES ==================== -->
+  <section id="tabSettings" class="hidden">
+    <div class="card">
+      <h2>⚙️ Configurações do servidor</h2>
+      <p class="muted" style="margin-top:0">
+        Todas as opções com explicação. O que você salvar aqui
+        <b>tem prioridade</b> sobre as opções do formulário do add-on
+        (Configurações → Add-ons → MC Modded Server). Use
+        <b>Restaurar padrões</b> para voltar ao que estiver no formulário do HA.
+      </p>
+
+      <div class="grid2">
+        <div>
+          <div class="fld">
+            <label>EULA da Mojang</label>
+            <p class="desc">Aceite da licença do Minecraft (https://aka.ms/MinecraftEULA). O servidor não inicia sem isso.</p>
+            <div class="check"><input type="checkbox" id="s_eula"><span>Eu aceito a EULA</span></div>
+          </div>
+          <div class="fld">
+            <label>Tipo de servidor (loader)</label>
+            <p class="desc">Qual "motor" o servidor usa. Fabric = leve e rápido; NeoForge/Forge = modpacks grandes; Paper/Purpur = plugins; Vanilla = sem mods.</p>
+            <select id="s_loader">
+              <option value="FABRIC">Fabric</option>
+              <option value="NEOFORGE">NeoForge</option>
+              <option value="FORGE">Forge</option>
+              <option value="VANILLA">Vanilla (sem mods)</option>
+              <option value="PAPER">Paper (plugins)</option>
+              <option value="PURPUR">Purpur (plugins)</option>
+            </select>
+          </div>
+          <div class="fld">
+            <label>Versão do Minecraft</label>
+            <p class="desc">Ex.: 1.21.4, 1.20.1, ou LATEST para a versão mais recente. Todos os jogadores precisam usar a mesma versão.</p>
+            <input type="text" id="s_minecraft_version">
+          </div>
+          <div class="fld">
+            <label>Memória (RAM)</label>
+            <p class="desc">Quanta RAM o servidor usa. Ex.: 4G para Fabric leve, 8G para modpack médio. Não passe da RAM total do seu equipamento.</p>
+            <input type="text" id="s_memory" placeholder="4G">
+          </div>
+          <div class="fld">
+            <label>Otimização Aikar</label>
+            <p class="desc">Flags de JVM afinadas para servidores Minecraft. Recomendado manter ativo.</p>
+            <div class="check"><input type="checkbox" id="s_aikar_flags"><span>Usar flags do Aikar</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="fld">
+            <label>MOTD (mensagem do servidor)</label>
+            <p class="desc">Texto aparece na lista de servidores do jogo quando alguém abre Multijogador.</p>
+            <input type="text" id="s_motd">
+          </div>
+          <div class="fld">
+            <label>Máximo de jogadores</label>
+            <p class="desc">Quantas pessoas podem entrar ao mesmo tempo.</p>
+            <input type="text" id="s_max_players" inputmode="numeric">
+          </div>
+          <div class="fld">
+            <label>Validação de contas (online-mode)</label>
+            <p class="desc">Ativado: só entram contas originais (Microsoft/Xbox) — recomendado e mais seguro.
+              Desativado: entra qualquer cliente, inclusive não oficiais.</p>
+            <div class="check"><input type="checkbox" id="s_online_mode"><span>Exigir conta original</span></div>
+          </div>
+          <div class="fld">
+            <label>Dificuldade</label>
+            <p class="desc">O quão perigoso é o mundo (monstros, dano de fome).</p>
+            <select id="s_difficulty">
+              <option value="peaceful">Peaceful (sem monstros)</option>
+              <option value="easy">Easy (fácil)</option>
+              <option value="normal">Normal</option>
+              <option value="hard">Hard (difícil)</option>
+            </select>
+          </div>
+          <div class="fld">
+            <label>Modo de jogo padrão</label>
+            <p class="desc">Modo em que jogadores novos entram no mundo.</p>
+            <select id="s_gamemode">
+              <option value="survival">Sobrevivência</option>
+              <option value="creative">Criativo</option>
+              <option value="adventure">Aventura</option>
+              <option value="spectator">Espectador</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <div class="fld">
+            <label>PvP</label>
+            <p class="desc">Permite que jogadores se machuquem entre si.</p>
+            <div class="check"><input type="checkbox" id="s_pvp"><span>Permitir PvP</span></div>
+          </div>
+          <div class="fld">
+            <label>Nether</label>
+            <p class="desc">Permite viajar ao Nether (portais).</p>
+            <div class="check"><input type="checkbox" id="s_allow_nether"><span>Permitir Nether</span></div>
+          </div>
+          <div class="fld">
+            <label>Blocos de comando</label>
+            <p class="desc">Ativa blocos de comando (usados em mapas e automações). Requer o servidor reiniciar.</p>
+            <div class="check"><input type="checkbox" id="s_enable_command_block"><span>Ativar blocos de comando</span></div>
+          </div>
+          <div class="fld">
+            <label>Nome do mundo</label>
+            <p class="desc">Pasta onde o mundo fica salvo (padrão: world). Não troque depois que o mundo já existe, senão parecerá um mundo novo.</p>
+            <input type="text" id="s_level_name">
+          </div>
+          <div class="fld">
+            <label>Tipo de terreno</label>
+            <p class="desc">Formato do mundo gerado (importante na primeira criação).</p>
+            <select id="s_level_type">
+              <option value="minecraft:normal">Normal</option>
+              <option value="minecraft:flat">Plano (flat)</option>
+              <option value="minecraft:amplified">Amplificado</option>
+              <option value="minecraft:large_biomes">Biomas grandes</option>
+            </select>
+          </div>
+          <div class="fld">
+            <label>Distância de visualização</label>
+            <p class="desc">Em chunks (16 blocos). 8–12 é recomendado; mais que isso exige bastante CPU.</p>
+            <input type="text" id="s_view_distance" inputmode="numeric">
+          </div>
+        </div>
+
+        <div>
+          <div class="fld">
+            <label>Whitelist (jogadores permitidos)</label>
+            <p class="desc">Um nome por linha. Só essas pessoas entram se a whitelist estiver ativada
+              (<code>whitelist=true</code> no server.properties — ou use a aba Whitelist).</p>
+            <textarea id="s_whitelist" class="small" spellcheck="false" placeholder="Steve&#10;Alex"></textarea>
+          </div>
+          <div class="fld">
+            <label>Operadores (admins do jogo)</label>
+            <p class="desc">Um nome por linha. Têm comandos como /op, /gamemode e /kick.</p>
+            <textarea id="s_ops" class="small" spellcheck="false" placeholder="Steve"></textarea>
+          </div>
+          <div class="fld">
+            <label>Mods do Modrinth (automáticos)</label>
+            <p class="desc">Um slug por linha — baixados a cada início do servidor, junto com as dependências.
+              Ex.: <code>fabric-api</code>, <code>lithium</code>, <code>chunky</code>.</p>
+            <textarea id="s_modrinth_projects" class="small" spellcheck="false" placeholder="fabric-api&#10;lithium"></textarea>
+          </div>
+          <div class="fld">
+            <label>Senha do RCON</label>
+            <p class="desc">Senha do console remoto (usado pelo painel). Deixe vazio para gerar uma automaticamente.</p>
+            <input type="password" id="s_rcon_password" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:6px">
+        <button class="primary" onclick="saveSettings(true)">💾 Salvar e reiniciar servidor</button>
+        <button onclick="saveSettings(false)">💾 Salvar (aplicar na próxima início)</button>
+        <button onclick="resetSettings()">↩ Restaurar padrões do add-on</button>
+        <span class="muted" id="settingsHint"></span>
       </div>
     </div>
   </section>
@@ -223,6 +396,7 @@ function showTab(btn) {
   document.querySelectorAll('main section').forEach(s => s.classList.add('hidden'));
   $(btn.dataset.tab).classList.remove('hidden');
   if (btn.dataset.tab === 'tabConsole') loadConsole();
+  if (btn.dataset.tab === 'tabSettings') loadSettings();
   if (btn.dataset.tab === 'tabProps') loadProps();
   if (btn.dataset.tab === 'tabWhitelist') loadWhitelist();
   if (btn.dataset.tab === 'tabMods') loadMods();
@@ -276,6 +450,96 @@ async function sendCmd() {
         body: JSON.stringify({ cmd }) }); }
   catch (e) { toast(e.message, true); }
   setTimeout(loadConsole, 600);
+}
+
+/* ---------------- configurações (aba em português) ---------------- */
+let settingsLoaded = false;
+
+async function loadSettings() {
+  try {
+    const d = await api('api/settings');
+    const s = d.settings || {};
+    $('s_eula').checked = s.eula === true;
+    $('s_loader').value = s.loader || 'FABRIC';
+    $('s_minecraft_version').value = s.minecraft_version || '';
+    $('s_memory').value = s.memory || '';
+    $('s_aikar_flags').checked = s.aikar_flags !== false;
+    $('s_motd').value = s.motd || '';
+    $('s_max_players').value = s.max_players ?? 10;
+    $('s_online_mode').checked = s.online_mode !== false;
+    $('s_difficulty').value = s.difficulty || 'normal';
+    $('s_gamemode').value = s.gamemode || 'survival';
+    $('s_pvp').checked = s.pvp !== false;
+    $('s_allow_nether').checked = s.allow_nether !== false;
+    $('s_enable_command_block').checked = s.enable_command_block === true;
+    $('s_level_name').value = s.level_name || 'world';
+    $('s_level_type').value = s.level_type || 'minecraft:normal';
+    $('s_view_distance').value = s.view_distance ?? 10;
+    $('s_whitelist').value = (s.whitelist || []).join('\n');
+    $('s_ops').value = (s.ops || []).join('\n');
+    $('s_modrinth_projects').value = (s.modrinth_projects || []).join('\n');
+    $('s_rcon_password').value = s.rcon_password || '';
+    $('settingsHint').textContent = d.has_custom
+      ? '✔ Você tem personalizações salvas (custom.json) que valem mais que o formulário do HA.'
+      : 'Usando os padrões do formulário do add-on.';
+    settingsLoaded = true;
+  } catch (e) { toast(e.message, true); }
+}
+
+function collectSettings() {
+  const list = id => $(id).value.split('\n').map(v => v.trim()).filter(Boolean);
+  let maxPlayers = parseInt($('s_max_players').value, 10);
+  let viewDist = parseInt($('s_view_distance').value, 10);
+  if (isNaN(maxPlayers) || maxPlayers < 1) maxPlayers = 10;
+  if (isNaN(viewDist) || viewDist < 2) viewDist = 10;
+  return {
+    settings: {
+      eula: $('s_eula').checked,
+      loader: $('s_loader').value,
+      minecraft_version: $('s_minecraft_version').value.trim(),
+      memory: $('s_memory').value.trim(),
+      aikar_flags: $('s_aikar_flags').checked,
+      motd: $('s_motd').value.trim(),
+      max_players: maxPlayers,
+      online_mode: $('s_online_mode').checked,
+      difficulty: $('s_difficulty').value,
+      gamemode: $('s_gamemode').value,
+      pvp: $('s_pvp').checked,
+      allow_nether: $('s_allow_nether').checked,
+      enable_command_block: $('s_enable_command_block').checked,
+      level_name: $('s_level_name').value.trim() || 'world',
+      level_type: $('s_level_type').value,
+      view_distance: viewDist,
+      whitelist: list('s_whitelist'),
+      ops: list('s_ops'),
+      modrinth_projects: list('s_modrinth_projects'),
+      rcon_password: $('s_rcon_password').value,
+    }
+  };
+}
+
+async function saveSettings(restart) {
+  if (!settingsLoaded) return;
+  try {
+    const d = await api('api/settings' + (restart ? '?restart=1' : ''), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(collectSettings())
+    });
+    toast(d.restarted
+      ? 'Salvo! Reiniciando o servidor com as novas configurações…'
+      : 'Salvo! Será aplicado no próximo início do servidor.');
+    loadSettings();
+    loadStatus();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function resetSettings() {
+  if (!confirm('Remover as personalizações e voltar aos padrões do formulário do add-on?')) return;
+  try {
+    await api('api/settings?reset=1', { method: 'POST' });
+    toast('Padrões do add-on restaurados.');
+    loadSettings();
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------------- properties ---------------- */
