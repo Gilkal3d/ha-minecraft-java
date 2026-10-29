@@ -1,7 +1,7 @@
 name: MC Modded Server
-version: "1.1.2"
+version: "1.2.0"
 slug: mc_modded
-description: Servidor Minecraft Java com Fabric, NeoForge ou Forge + painel web (console, server.properties, whitelist e mods)
+description: Servidor Minecraft Java com Fabric, NeoForge ou Forge + painel web (visão geral, console, jogadores, backups, agendamentos, server.properties e mods)
 url: https://github.com/Gilkal3d/ha-minecraft-java
 arch:
   - amd64
@@ -17,6 +17,11 @@ panel_icon: mdi:cube-outline
 panel_title: MC Server
 # Watchdog: se o painel web parar de responder, o Supervisor reinicia o add-on
 watchdog: http://[HOST]:[PORT:8099]/api/status
+
+# homeassistant_api: true => o Supervisor injeta SUPERVISOR_TOKEN e libera o
+# endpoint http://supervisor/core/api. Usado pelo painel para publicar sensores
+# (status, jogadores, RAM) e enviar notificações no Home Assistant.
+homeassistant_api: true
 
 ports:
   "25565/tcp": 25565
@@ -44,6 +49,13 @@ options:
   ops: []
   modrinth_projects: []
   rcon_password: ""
+  # Agendamentos (formato HH:MM, 24h). Vazio = desativado.
+  daily_restart: ""
+  daily_backup: ""
+  backup_keep: 7
+  # Notificações no Home Assistant (entrou/saiu, backup, caiu/religou).
+  notifications: false
+  notify_service: ""
 
 schema:
   eula: bool
@@ -66,3 +78,8 @@ schema:
   ops: [str]
   modrinth_projects: [str]
   rcon_password: str?
+  daily_restart: str?
+  daily_backup: str?
+  backup_keep: int
+  notifications: bool
+  notify_service: str?

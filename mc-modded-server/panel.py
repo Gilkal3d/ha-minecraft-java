@@ -18,9 +18,12 @@ import re
 import socket
 import struct
 import subprocess
+import threading
+import time
 import urllib.parse
 import urllib.request
 import uuid as uuidlib
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -34,6 +37,10 @@ FLAG_FILE = DATA / ".server_stopped"
 LOG_FILE = DATA / "logs" / "latest.log"
 PROPS_FILE = DATA / "server.properties"
 WHITELIST_FILE = DATA / "whitelist.json"
+BACKUP_DIR = DATA / "backups"
+STATE_FILE = DATA / ".panel_state.json"  # marcas dos agendamentos (uma por dia)
+HA_URL = "http://supervisor/core/api"
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 # O Supervisor do HA injeta INGRESS_PORT quando o add-on usa ingress;
 # 8099 é apenas o fallback (ex.: execução manual para depuração)
 PORT = int(os.environ.get("INGRESS_PORT") or 8099)
@@ -59,10 +66,11 @@ def options():
 
 # Chaves editáveis pela aba "Configurações" do painel
 SET_KEYS_STR = ["loader", "minecraft_version", "memory", "motd", "difficulty",
-                "gamemode", "level_name", "level_type", "rcon_password"]
+                "gamemode", "level_name", "level_type", "rcon_password",
+                "daily_restart", "daily_backup", "notify_service"]
 SET_KEYS_BOOL = ["eula", "aikar_flags", "online_mode", "pvp", "allow_nether",
-                 "enable_command_block"]
-SET_KEYS_INT = ["max_players", "view_distance"]
+                 "enable_command_block", "notifications"]
+SET_KEYS_INT = ["max_players", "view_distance", "backup_keep"]
 SET_KEYS_LIST = ["whitelist", "ops", "modrinth_projects"]
 SET_KEYS = SET_KEYS_STR + SET_KEYS_BOOL + SET_KEYS_INT + SET_KEYS_LIST
 
@@ -74,13 +82,280 @@ def rcon_password():
         return ""
 
 
-def server_running():
+# Estado simples (agendamentos já disparados hoje, aviso de caiu/religou)
+def _state():
+    return _read_json(STATE_FILE)
+
+
+def _state_set(**kv):
+    st = _state()
+    st.update(kv)
+    write_json_file(STATE_FILE, st)
+
+
+def _java_pids():
     try:
-        return subprocess.run(
-            ["pgrep", "-f", "java"], stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL).returncode == 0
+        out = subprocess.run(
+            ["pgrep", "-f", "java"], capture_output=True, text=True, timeout=5).stdout
+        return [p for p in out.split() if p.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def server_running():
+    return bool(_java_pids())
+
+
+def _proc_rss_mb(pid):
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def _proc_uptime_s(pid):
+    try:
+        return max(0.0, time.time() - Path(f"/proc/{pid}").stat().st_ctime)
+    except Exception:
+        return 0.0
+
+
+def server_stats():
+    """(ram_mb, uptime_s) do processo Java mais antigo, ou (0, 0)."""
+    best_mb, best_up = 0.0, 0.0
+    for pid in _java_pids():
+        up = _proc_uptime_s(pid)
+        if up > best_up:
+            best_up = up
+            best_mb = _proc_rss_mb(pid)
+    return best_mb, best_up
+
+
+def _progress_from_log(text):
+    """Estima o progresso do primeiro start (0-100) e uma fase legível."""
+    low = text.lower()
+    steps = [
+        ("baixando instalador", 10), ("downloading installer", 10),
+        ("baixando", 20), ("downloading", 20),
+        ("instalando", 45), ("installing", 45),
+        ("loading mods", 60), ("carregando mods", 60),
+        ("loading minecraft", 65), ("preparing start region", 75),
+        ("preparando a regiao", 75), ("preparing spawn area", 75),
+        ("generating spawn", 75), ("done (", 100),
+    ]
+    best = 0
+    for needle, pct in steps:
+        if needle in low:
+            best = max(best, pct)
+    if best >= 100:
+        return 100, "Pronto"
+    for label, pct in steps:
+        if pct == best and best > 0:
+            return best, label.replace("done (", "").strip().capitalize()
+    return 0, "Aguardando o servidor"
+
+
+def log_progress():
+    try:
+        text = LOG_FILE.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return 0, "Aguardando o servidor"
+    return _progress_from_log(text)
+
+
+# ---------------------------------------------------------------- backups
+def _zip_add(zf, root, arc=""):
+    """Adiciona um arquivo ou diretório ao zip com caminhos relativos corretos,
+    pulando pastas pesadas/irrelevantes (logs, cache, libraries...)."""
+    skip_dirs = {"logs", "cache", "crash-reports", "backups", "libraries",
+                 "versions", "assets", "neoform", "runs", ".cache"}
+    skip_files = {"session.lock", "launcher_profile.json"}
+
+    if root.is_file():
+        if root.name not in skip_files:
+            zf.write(root, arc or root.name)
+        return
+    for child in sorted(root.iterdir()):
+        child_arc = f"{arc}/{child.name}" if arc else child.name
+        if child.is_dir():
+            if child.name.lower() not in skip_dirs and not child.name.startswith("."):
+                _zip_add(zf, child, child_arc)
+        elif child.name not in skip_files:
+            zf.write(child, child_arc)
+
+
+def make_backup(tag="manual"):
+    """Cria um .zip com mundo + configs essenciais. Retorna (nome, tamanho)."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    name = f"backup-{stamp}-{tag}.zip"
+    dest = BACKUP_DIR / name
+    level = (options().get("level_name") or "world").strip() or "world"
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        for entry in (level, "server.properties", "whitelist.json", "ops.json",
+                      "banned-players.json", "banned-ips.json", "eula.txt",
+                      "config", "defaultconfigs", "mods"):
+            p = DATA / entry
+            if p.exists():
+                _zip_add(zf, p, arc=entry)
+    prune_backups()
+    return name, dest.stat().st_size
+
+
+def prune_backups():
+    try:
+        keep = int(options().get("backup_keep") or 7)
+    except Exception:
+        keep = 7
+    keep = max(1, keep)
+    zips = sorted(BACKUP_DIR.glob("backup-*.zip"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in zips[keep:]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
+
+
+def _safe_name(name):
+    return bool(re.fullmatch(r"backup-[0-9]{8}-[0-9]{6}-[a-z]+\.zip", name or ""))
+
+
+# ---------------------------------------------------------------- HA bridge
+def _ha_post(path, payload):
+    if not SUPERVISOR_TOKEN:
+        return False
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        HA_URL + path, data=data, method="POST",
+        headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        return True
     except Exception:
         return False
+
+
+def _notify(message, title="MC Modded Server"):
+    """Envia notificação ao HA. Serviço vazio => persistent_notification."""
+    if not (options().get("notifications") is True):
+        return
+    svc = (options().get("notify_service") or "").strip()
+    if svc:
+        if svc.startswith("notify."):
+            svc = svc[len("notify."):]
+        _ha_post(f"/services/notify/{svc}", {"title": title, "message": message})
+    else:
+        _ha_post("/services/persistent_notification/create",
+                 {"title": title, "message": message})
+
+
+def _publish_sensors():
+    running = server_running()
+    opts = options()
+    ram_mb, uptime_s = server_stats()
+    players = None
+    if running:
+        try:
+            out = rcon_cmd("list")
+            m = re.search(r"(\d+).*?of.*?(\d+)", out)
+            names = [n.strip() for n in out.split(":", 1)[1].split(",")] \
+                if ":" in out else []
+            players = {"online": int(m.group(1)) if m else len(names),
+                       "max": int(m.group(2)) if m else 0,
+                       "names": [n for n in names if n]}
+        except Exception:
+            pass
+
+    attrs = {"friendly_name": "Servidor MC (status)", "icon": "mdi:cube-outline",
+             "attribution": "Add-on MC Modded Server",
+             "loader": opts.get("loader"), "version": opts.get("minecraft_version")}
+    _ha_post("/states/sensor.mc_server_status",
+             {"state": "online" if running else "offline",
+              "attributes": {**attrs, "uptime_s": int(uptime_s),
+                             "ram_mb": round(ram_mb, 1)}})
+
+    online = players["online"] if players else 0
+    names = ", ".join(players["names"]) if players and players["names"] else ""
+    _ha_post("/states/sensor.mc_players_online",
+             {"state": online,
+              "attributes": {"friendly_name": "MC - Jogadores online",
+                             "icon": "mdi:account-group",
+                             "names": names,
+                             "max": players["max"] if players else 0}})
+
+    _ha_post("/states/sensor.mc_ram",
+             {"state": round(ram_mb, 1),
+              "attributes": {"friendly_name": "MC - RAM do servidor",
+                             "unit_of_measurement": "MB", "icon": "mdi:memory"}})
+
+
+def _ha_loop():
+    """Thread: publica sensores e detecta entrada/saída de jogadores."""
+    prev_names = set()
+    prev_running = False
+    while True:
+        try:
+            running = server_running()
+            names = set()
+            if running:
+                try:
+                    out = rcon_cmd("list")
+                    if ":" in out:
+                        names = {n.strip() for n in out.split(":", 1)[1].split(",")} - {""}
+                except Exception:
+                    pass
+            _publish_sensors()
+            # notificações de entrada/saída
+            if names - prev_names and prev_running:
+                for n in sorted(names - prev_names):
+                    _notify(f"👤 {n} entrou no servidor.")
+            if prev_names - names and running:
+                for n in sorted(prev_names - names):
+                    _notify(f"👋 {n} saiu do servidor.")
+            # caiu/religou inesperadamente (sem flag do usuário)
+            if prev_running and not running and not FLAG_FILE.exists():
+                _notify("⚠️ O servidor saiu do ar. O add-on vai tentar religar.",
+                        "MC Server - alerta")
+            prev_names, prev_running = names, running
+        except Exception:
+            pass
+        time.sleep(20)
+
+
+def _sched_loop():
+    """Thread: restart diário (via RCON stop, sem flag => auto-restart) e backup."""
+    while True:
+        try:
+            opts = options()
+            today = time.strftime("%Y-%m-%d")
+            now_hm = time.strftime("%H:%M")
+            st = _state()
+
+            dr = (opts.get("daily_restart") or "").strip()
+            if dr and now_hm == dr and st.get("restart_day") != today:
+                if server_running():
+                    try:
+                        rcon_cmd("stop")  # sem FLAG => o supervisor religa sozinho
+                    except Exception:
+                        pass
+                _state_set(restart_day=today)
+                _notify(f"🔄 Restart diário agendado ({dr}) iniciado.")
+
+            db = (opts.get("daily_backup") or "").strip()
+            if db and now_hm == db and st.get("backup_day") != today:
+                name, size = make_backup("auto")
+                _state_set(backup_day=today)
+                _notify(f"💾 Backup automático criado: {name} ({size // 1048576} MB).")
+        except Exception:
+            pass
+        time.sleep(25)
 
 
 def tail_log(lines=250):
@@ -300,6 +575,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/status":
                 return self.api_status()
+            if path == "/api/players":
+                return self.api_players()
+            if path == "/api/backups":
+                return self.api_backups()
+            if path == "/api/backups/download":
+                return self.api_backup_download(query)
+            if path == "/api/log/download":
+                return self.api_log_download()
             if path == "/api/settings":
                 return self._json({
                     "settings": options(),
@@ -406,6 +689,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_whitelist_add(query)
             if path == "/api/whitelist/remove":
                 return self.api_whitelist_remove(query)
+            if path == "/api/players/action":
+                return self.api_player_action(query)
+            if path == "/api/backups/create":
+                return self.api_backup_create()
+            if path == "/api/backups/restore":
+                return self.api_backup_restore(query)
+            if path == "/api/backups/delete":
+                return self.api_backup_delete(query)
             if path == "/api/mods/upload":
                 return self.api_mods_upload()
             if path == "/api/mods/toggle":
@@ -438,6 +729,8 @@ class Handler(BaseHTTPRequestHandler):
                                "names": names}
             except Exception:
                 pass
+        ram_mb, uptime_s = server_stats()
+        pct, phase = log_progress()
         self._json({
             "running": running,
             "stopped_by_user": FLAG_FILE.exists(),
@@ -445,9 +738,142 @@ class Handler(BaseHTTPRequestHandler):
             "loader": opts.get("loader"),
             "version": opts.get("minecraft_version"),
             "memory": opts.get("memory"),
+            "motd": opts.get("motd"),
             "players": players,
             "log_exists": LOG_FILE.exists(),
+            "ram_mb": round(ram_mb, 1),
+            "uptime_s": int(uptime_s),
+            "startup": {"percent": pct, "phase": phase},
         })
+
+    # -------- jogadores --------
+    def api_players(self):
+        opts = options()
+        running = server_running()
+        online = []
+        if running:
+            try:
+                out = rcon_cmd("list")
+                if ":" in out:
+                    online = [n.strip() for n in out.split(":", 1)[1].split(",") if n.strip()]
+            except Exception:
+                pass
+        # sessão atual a partir do log (entrou/saiu)
+        events = []
+        try:
+            for line in LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+                clean = ANSI_RE.sub("", line)
+                m = re.match(r"\[.*?\]:?\s*([A-Za-z0-9_]{1,16}) (joined the game|left the game)",
+                             clean.strip())
+                if m:
+                    events.append({"name": m.group(1),
+                                   "type": "join" if "joined" in m.group(2) else "leave"})
+        except Exception:
+            pass
+        # mantém apenas quem está online agora
+        online_set = {n.lower() for n in online}
+        history = [e for e in events
+                   if (e["type"] == "leave") or (e["name"].lower() in online_set)]
+        self._json({
+            "running": running,
+            "online": online,
+            "max": int(opts.get("max_players") or 0),
+            "ops": [o.strip() for o in (opts.get("ops") or [])],
+            "history": history[-40:],
+        })
+
+    def api_player_action(self, query):
+        name = (query.get("name") or [""])[0].strip()
+        action = (query.get("action") or [""])[0].strip()
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,16}", name):
+            return self._error("nome de jogador inválido")
+        if not server_running():
+            return self._error("servidor parado — ação disponível só com o servidor online")
+        cmds = {
+            "kick": f"kick {name}",
+            "ban": f"ban {name}",
+            "pardon": f"pardon {name}",
+            "op": f"op {name}",
+            "deop": f"deop {name}",
+            "wl_add": f"whitelist add {name}",
+            "wl_remove": f"whitelist remove {name}",
+        }
+        if action not in cmds:
+            return self._error("ação desconhecida")
+        out = rcon_cmd(cmds[action])
+        self._json({"ok": True, "output": out})
+
+    # -------- backups --------
+    def api_backups(self):
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        items = []
+        for p in sorted(BACKUP_DIR.glob("backup-*.zip"),
+                        key=lambda x: x.stat().st_mtime, reverse=True):
+            st = p.stat()
+            items.append({"name": p.name, "size": st.st_size,
+                          "created": int(st.st_mtime)})
+        self._json({"backups": items,
+                    "keep": int(options().get("backup_keep") or 7),
+                    "running": server_running()})
+
+    def api_backup_create(self):
+        if server_running():
+            try:
+                rcon_cmd("save-all flush")  # garante mundo consistente
+            except Exception:
+                pass
+        name, size = make_backup("manual")
+        threading.Timer(1.0, lambda: _notify(
+            f"💾 Backup manual criado: {name} ({size // 1048576} MB).")).start()
+        self._json({"ok": True, "name": name, "size": size})
+
+    def api_backup_restore(self, query):
+        name = (query.get("name") or [""])[0]
+        if not _safe_name(name):
+            return self._error("nome de backup inválido")
+        if server_running():
+            return self._error("Pare o servidor antes de restaurar um backup")
+        src = BACKUP_DIR / name
+        if not src.exists():
+            return self._error("backup não encontrado", 404)
+        # segurança: faz um backup do estado atual antes de restaurar
+        try:
+            make_backup("pre-restore")
+        except Exception:
+            pass
+        level = (options().get("level_name") or "world").strip() or "world"
+        with zipfile.ZipFile(src) as zf:
+            for info in zf.infolist():
+                # evita path traversal
+                if info.filename.startswith("/") or ".." in info.filename.split("/"):
+                    return self._error("backup corrompido (caminho inválido)")
+            zf.extractall(DATA)
+        self._json({"ok": True, "message": "Backup restaurado. Inicie o servidor.",
+                    "level": level})
+
+    def api_backup_delete(self, query):
+        name = (query.get("name") or [""])[0]
+        if not _safe_name(name):
+            return self._error("nome de backup inválido")
+        p = BACKUP_DIR / name
+        if not p.exists():
+            return self._error("backup não encontrado", 404)
+        p.unlink()
+        self._json({"ok": True})
+
+    def api_backup_download(self, query):
+        name = (query.get("name") or [""])[0]
+        if not _safe_name(name):
+            return self._error("nome de backup inválido")
+        p = BACKUP_DIR / name
+        if not p.exists():
+            return self._error("backup não encontrado", 404)
+        self._file(p, "application/zip", name)
+
+    def api_log_download(self):
+        if not LOG_FILE.exists():
+            return self._error("log não encontrado", 404)
+        self._file(LOG_FILE, "text/plain", "latest.log")
 
     # -------- whitelist --------
     def api_whitelist(self):
@@ -547,6 +973,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
         return self._error("mod não encontrado", 404)
 
+    # -------- download de arquivos --------
+    def _file(self, path, ctype, download_name):
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{re.sub(r"[^A-Za-z0-9._-]", "_", download_name)}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     # -------- arquivos estáticos --------
     def _static(self, rel, ctype):
         path = (STATIC_DIR / rel).resolve()
@@ -563,6 +1002,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     MODS_DIR.mkdir(parents=True, exist_ok=True)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    # threads de sensores/notificações e agendamentos (fire-and-forget)
+    for fn in (_ha_loop, _sched_loop):
+        t = threading.Thread(target=fn, daemon=True)
+        t.start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"[panel] ouvindo em :{PORT}", flush=True)
     server.serve_forever()

@@ -40,14 +40,57 @@ Construído sobre a imagem oficial
 
 | Aba | O que faz |
 |---|---|
-| **Console** | Log ao vivo + campo para enviar comandos (RCON). |
-| **Configurações** | Formulário completo em **português**, cada opção explicando para que serve: loader, versão, RAM, MOTD, dificuldade, modo de jogo, PvP, Nether, whitelist, ops, mods do Modrinth, RCON etc. Salva e reinicia o servidor em um clique. |
+| **Visão geral** | Status, RAM em uso, uptime e **barra de progresso do primeiro start** (baixando loader → instalando → gerando mundo). Mostra quem está online com **avatar**. |
+| **Console** | Log ao vivo + campo para enviar comandos (RCON). Filtro de busca, seguir rolagem, **histórico de comandos (seta ↑)**, botões rápidos (`list`, `time`, `weather`, `save-all`…) e **download do log**. |
+| **Jogadores** | Quem está online (com avatar), botões de **kick / ban / OP / whitelist**, quem entrou ou saiu na sessão, e a lista de whitelist editável. |
+| **Backups** | **Cria, restaura, baixa e exclui** backups do mundo + configs em `.zip`. Configura quantos manter (os antigos são apagados). |
+| **Configurações** | Formulário completo em **português**, cada opção explicando para que serve: loader, versão, RAM, MOTD, dificuldade, modo de jogo, PvP, Nether, whitelist, ops, mods do Modrinth, RCON etc. Inclui **agendamentos** (restart e backup diários) e **notificações no Home Assistant**. Salva e reinicia o servidor em um clique. |
 | **server.properties** | Editor de texto completo; salva com o servidor parado. |
-| **Whitelist** | Adiciona/remove jogadores; o UUID é resolvido pela API da Mojang (ou UUID offline em servidores `online-mode=false`). |
 | **Mods** | Instala do Modrinth por slug (versão compatível + dependências), envia `.jar`, ativa/desativa/exclui mods. |
 
 Start/Stop/Reiniciar no cabeçalho: o **parar** é gracioso (envia `/stop` via RCON);
 o painel segura o servidor parado até você iniciar de novo.
+
+## Home Assistant (sensores e notificações)
+
+A partir da **versão 1.2.0** o add-on usa a API do próprio Home Assistant para
+criar sensores e enviar notificações (é preciso apenas abrir o painel uma vez
+para o add-on subir e publicar).
+
+**Sensores criados automaticamente:**
+
+| Entidade | Mostra |
+|---|---|
+| `sensor.mc_server_status` | `online` / `offline` (+ loader, versão, uptime, RAM) |
+| `sensor.mc_players_online` | nº de jogadores online (+ nomes, máx.) |
+| `sensor.mc_ram` | RAM do servidor em MB |
+
+**Notificações:** ative em **Configurações → Notificações no Home Assistant** e
+escolha o serviço (ex.: `notify.mobile_app_celular`). O add-on avisa quando alguém
+**entra/sai**, quando o servidor **cai/religa** e quando um **backup termina**.
+Deixe o serviço vazio para usar a notificação persistente do HA.
+
+**Agendamentos:** em **Configurações → Agendamentos** defina um horário (HH:MM)
+para **restart diário** e **backup diário**. O restart é gracioso (RCON `stop`) e o
+servidor religa sozinho; o backup respeita quantos manter.
+
+**Exemplo de automação** — avisar quando alguém entrar:
+
+```yaml
+automation:
+  - alias: "MC: jogador entrou"
+    trigger:
+      - platform: state
+        entity_id: sensor.mc_players_online
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.mc_players_online
+        above: 0
+    action:
+      - service: notify.mobile_app_celular
+        data:
+          message: "Alguém entrou no servidor de Minecraft!"
+```
 
 ## Solução de problemas
 
@@ -86,8 +129,11 @@ tag da base:
 
 ## Dicas
 
-- **Backup**: o mundo fica em `mc_modded/` no diretório de dados do add-on.
-  Use o backup nativo do HA (Configurações → Sistema → Backups) ou Samba.
+- **Backup**: use a aba **Backups** do painel (cria/restaura `.zip` do mundo).
+  Os backups ficam em `/data/backups` (sobrevivem a atualizações do add-on), mas
+  **não entram no backup nativo do HA** — então **baixe os `.zip` para o seu PC**
+  de tempos em tempos (botão **⬇ Baixar**). Para proteção extra, use também o
+  backup nativo do HA (Configurações → Sistema → Backups) ou Samba.
 - **Desempenho**: em hardware limitado, prefira Fabric + Lithium/FerriteCore.
   Reduza `view-distance` para 8 ou menos.
 - **Domínio externo**: use o proxy Duck DNS/Caddy do HA ou Cloudflare Tunnel;
