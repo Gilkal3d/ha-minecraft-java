@@ -12,17 +12,19 @@ FROM itzg/minecraft-server:java21
 
 USER root
 
-# python3 = backend do painel; jq = leitura das opções do add-on
+# python3 = backend do painel; jq = leitura das opções do add-on;
+# procps = pgrep usado pelo painel para detectar o servidor
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 curl ca-certificates jq \
+    && apt-get install -y --no-install-recommends python3 curl ca-certificates jq procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY mc-run.sh /mc-run.sh
 COPY panel.py /panel/panel.py
 COPY static/ /panel/static/
 
+# Garante LF (o Git no Windows pode ter gravado CRLF, o que quebra o shebang)
 RUN chmod +x /mc-run.sh \
-    && (dos2unix /mc-run.sh 2>/dev/null || true)
+    && sed -i 's/\r$//' /mc-run.sh
 
 # O healthcheck da imagem original usa mc-health e fica "unhealthy"
 # quando o usuário para o servidor de propósito; desativamos.

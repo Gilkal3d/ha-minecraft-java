@@ -1,0 +1,8 @@
+# Sempre LF nos arquivos de texto: CRLF no shebang do bash quebra o add-on
+* text=auto
+
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf

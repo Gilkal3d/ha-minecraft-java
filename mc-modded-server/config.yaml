@@ -1,18 +1,22 @@
 name: MC Modded Server
-version: "1.1.0"
+version: "1.1.1"
 slug: mc_modded
 description: Servidor Minecraft Java com Fabric, NeoForge ou Forge + painel web (console, server.properties, whitelist e mods)
 url: https://github.com/Gilkal3d/ha-minecraft-java
 arch:
   - amd64
   - aarch64
-init: false
-startup: system
+# init: true => tini como PID 1: repassa sinais (parada limpa) e reapara
+# processos zumbis do Java. Essencial para o add-on encerrar sem SIGKILL.
+init: true
+startup: application
 boot: auto
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:cube-outline
 panel_title: MC Server
+# Watchdog: se o painel web parar de responder, o Supervisor reinicia o add-on
+watchdog: http://[HOST]:[PORT:8099]/api/status
 
 ports:
   "25565/tcp": 25565

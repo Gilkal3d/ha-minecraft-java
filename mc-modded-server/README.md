@@ -49,6 +49,19 @@ Construído sobre a imagem oficial
 Start/Stop/Reiniciar no cabeçalho: o **parar** é gracioso (envia `/stop` via RCON);
 o painel segura o servidor parado até você iniciar de novo.
 
+## Solução de problemas
+
+| Sintoma | Causa / solução |
+|---|---|
+| Add-on fica em **"Iniciando"** e o painel mostra *"O aplicativo está iniciando…"* | O container está reiniciando em loop. Veja o **Log**: várias linhas `[addon] MC Modded Server iniciando...` seguidas de `Failed to bind to port` = o servidor anterior ainda encerrando. Atualize para a versão ≥ 1.1.1, que resolve isso. |
+| Log repete `EULA ainda não aceita` | Defina `eula: true` nas configurações do add-on e reinicie. |
+| Servidor inicia e some (reinicia sozinho) | Falta de RAM: NeoForge/Forge precisam de ≥ 4G livres no host. Diminua `memory` ou libere RAM do Home Assistant. O kernel mata o Java (OOM) e o add-on reinicia. |
+| Painel carrega, mas o Minecraft demora | Normal no **primeiro start** com mods (download do loader + mods + geração do mundo). O painel já funciona nesse meio-tempo. |
+| Mudou arquivos do add-on e nada mudou | O HA só reconstrói a imagem quando a **versão** sobe ou você usa **⋮ → Rebuild**. Nunca desinstale para atualizar (apaga o mundo em `/data`). |
+
+> **Dica:** ligue a opção **Watchdog** nas configurações do add-on — se o painel
+> web parar de responder, o Supervisor reinicia o add-on automaticamente.
+
 ## Instalando mods
 
 - **Modrinth (painel)**: informe o slug do projeto (a última parte da URL,

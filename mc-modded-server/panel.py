@@ -13,6 +13,7 @@ Funcionalidades:
   - gerenciador de mods (lista, upload, ativar/desativar, remover, instalar do Modrinth)
 """
 import json
+import os
 import re
 import socket
 import struct
@@ -33,7 +34,9 @@ FLAG_FILE = DATA / ".server_stopped"
 LOG_FILE = DATA / "logs" / "latest.log"
 PROPS_FILE = DATA / "server.properties"
 WHITELIST_FILE = DATA / "whitelist.json"
-PORT = 8099
+# O Supervisor do HA injeta INGRESS_PORT quando o add-on usa ingress;
+# 8099 é apenas o fallback (ex.: execução manual para depuração)
+PORT = int(os.environ.get("INGRESS_PORT") or 8099)
 MAX_UPLOAD = 300 * 1024 * 1024  # 300 MB
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")

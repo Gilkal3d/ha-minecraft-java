@@ -102,12 +102,27 @@ apply_env() {
 }
 
 # --- Painel web (reinicia sozinho se cair) -----------------------------------
-( while true; do python3 /panel/panel.py; sleep 2; done ) &
+( while true; do
+    python3 /panel/panel.py
+    echo "[addon] Painel web caiu; reiniciando em 2s..." >&2
+    sleep 2
+  done ) &
+
+# sleep interrompível: com o `wait`, o bash executa o trap assim que chega o
+# SIGTERM (um `sleep` simples só deixaria o trap rodar ao terminar)
+nap() { sleep "$1" & wait $! 2>/dev/null; }
 
 # --- Loop do servidor ---------------------------------------------------------
+# Flags de estado:
+#   stopping = 1  -> o add-on recebeu SIGTERM (parar/reiniciar pelo HA) e deve
+#                    encerrar o container DEPOIS de parar o servidor graciosamente
+stopping=0
+warned_eula=false
 child=""
+
 on_term() {
-  echo "[addon] Encerrando..."
+  echo "[addon] Encerrando o add-on (parando o servidor graciosamente)..."
+  stopping=1
   [ -n "$child" ] && kill -TERM "$child" 2>/dev/null
 }
 trap on_term TERM INT
@@ -116,18 +131,56 @@ echo "[addon] MC Modded Server iniciando..."
 
 while true; do
   apply_env
+
+  [ "$stopping" = "1" ] && exit 0
+
   if [ -f "$FLAG" ]; then
-    sleep 3
+    nap 3
     continue
   fi
+
   if [ "$EULA" != "TRUE" ]; then
-    sleep 10
+    if [ "$warned_eula" != "true" ]; then
+      echo "[addon] EULA ainda não aceita. Abra as configurações do add-on e defina 'eula: true'."
+      warned_eula=true
+    fi
+    nap 10
     continue
   fi
+  warned_eula=false
+
+  # Nunca inicia um segundo servidor enquanto o anterior ainda está encerrando
+  # (a parada graciosa do mc-server-runner demora até 60s; sem esta espera o
+  # novo processo falharia com "Failed to bind to port" em loop)
+  waited=0
+  while pgrep -f 'java|mc-server-runner' >/dev/null 2>&1; do
+    if [ "$waited" -ge 90 ]; then
+      echo "[addon] Servidor anterior não encerrou; forçando parada..."
+      pkill -TERM -f 'java|mc-server-runner' 2>/dev/null
+      nap 5
+      waited=0
+    fi
+    [ "$stopping" = "1" ] && exit 0
+    nap 2
+    waited=$((waited + 2))
+  done
+
   echo "[addon] Loader=${TYPE:-?} Versão=${VERSION:-?} Memória=${MEMORY:-?}"
   /image/scripts/start &
   child=$!
   wait "$child"
+  rc=$?
   child=""
-  sleep 3
+
+  # Recebemos SIGTERM durante o wait: NÃO reinicia o servidor, sai limpo
+  # (o tini/ docker então para o container sem precisar de SIGKILL)
+  if [ "$stopping" = "1" ]; then
+    echo "[addon] Servidor finalizado (código $rc). Add-on encerrado."
+    exit 0
+  fi
+
+  if [ ! -f "$FLAG" ] && [ "$EULA" = "TRUE" ]; then
+    echo "[addon] Servidor saiu (código $rc); reiniciando em 3s..."
+  fi
+  nap 3
 done
