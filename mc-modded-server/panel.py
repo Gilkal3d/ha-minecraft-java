@@ -693,6 +693,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_player_action(query)
             if path == "/api/backups/create":
                 return self.api_backup_create()
+            if path == "/api/backups/upload":
+                return self.api_backup_upload()
             if path == "/api/backups/restore":
                 return self.api_backup_restore(query)
             if path == "/api/backups/delete":
@@ -826,6 +828,31 @@ class Handler(BaseHTTPRequestHandler):
         threading.Timer(1.0, lambda: _notify(
             f"💾 Backup manual criado: {name} ({size // 1048576} MB).")).start()
         self._json({"ok": True, "name": name, "size": size})
+
+    def api_backup_upload(self):
+        """Recebe um .zip de backup enviado do computador do usuário."""
+        ctype = self.headers.get("Content-Type", "")
+        files = parse_multipart(self._body(), ctype)
+        if not files:
+            return self._error("nenhum arquivo recebido")
+        raw_name, content = files[0]
+        name = Path(raw_name).name
+        if not name.lower().endswith(".zip"):
+            return self._error("só é permitido enviar arquivos .zip")
+        if len(content) > MAX_UPLOAD:
+            return self._error("arquivo grande demais (máx. 300 MB)")
+        # renomeia para o padrão de backup do painel (mantém a validação _safe_name)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        new_name = f"backup-{stamp}-upload.zip"
+        dest = BACKUP_DIR / new_name
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+        # garante que é um zip válido
+        if not zipfile.is_zipfile(dest):
+            dest.unlink(missing_ok=True)
+            return self._error("o arquivo enviado não é um .zip válido")
+        prune_backups()
+        return self._json({"ok": True, "name": new_name, "size": len(content)})
 
     def api_backup_restore(self, query):
         name = (query.get("name") or [""])[0]

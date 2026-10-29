@@ -238,6 +238,11 @@
         <span class="muted">Mantém os <b id="bkKeep">7</b> mais recentes. Para restaurar, o servidor precisa estar parado.
           Baixe os <code>.zip</code> para o seu PC de vez em quando — eles ficam só no servidor.</span>
       </div>
+      <div class="row" style="margin-bottom:12px">
+        <input type="file" id="bkFile" accept=".zip">
+        <button onclick="backupUpload()">⬆ Restaurar do PC</button>
+        <span class="muted">Envie um <code>.zip</code> que você baixou antes (botão ⬇ Baixar) para restaurá-lo.</span>
+      </div>
       <table>
         <thead><tr><th>Arquivo</th><th>Data</th><th>Tamanho</th><th style="width:240px"></th></tr></thead>
         <tbody id="bkBody"></tbody>
@@ -903,6 +908,24 @@ async function backupCreate() {
     const d = await api('api/backups/create', { method: 'POST' });
     toast(`Backup criado: ${d.name} (${fmtSize(d.size)})`);
     loadBackups();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function backupUpload() {
+  const f = $('bkFile').files[0];
+  if (!f) return toast('Selecione um .zip de backup', true);
+  if (serverRunning) return toast('Pare o servidor antes de restaurar.', true);
+  if (!confirm(`Restaurar "${f.name}" do seu computador?\n\nUm backup de segurança do mundo atual é criado antes.`)) return;
+  const fd = new FormData();
+  fd.append('file', f, f.name);
+  toast('Enviando backup…');
+  try {
+    const up = await api('api/backups/upload', { method: 'POST', body: fd });
+    $('bkFile').value = '';
+    const d = await api(`api/backups/restore?name=${encodeURIComponent(up.name)}`, { method: 'POST' });
+    toast(d.message || 'Backup restaurado.');
+    loadBackups();
+    loadStatus();
   } catch (e) { toast(e.message, true); }
 }
 
