@@ -26,9 +26,13 @@ COPY static/ /panel/static/
 RUN chmod +x /mc-run.sh \
     && sed -i 's/\r$//' /mc-run.sh
 
-# O healthcheck da imagem original usa mc-health e fica "unhealthy"
-# quando o usuário para o servidor de propósito; desativamos.
-HEALTHCHECK NONE
+# Healthcheck do PAINEL (não do jogo). O Supervisor do HA exige um healthcheck
+# ativo para marcar o add-on como "iniciado": com HEALTHCHECK NONE o estado
+# ficava preso em "Iniciando" para sempre e o painel via Ingress nunca carregava.
+# Apontando para o painel: fica "healthy" em ~10s (antes do Minecraft terminar
+# de carregar) e NÃO acusa erro quando você para o servidor de propósito.
+HEALTHCHECK --interval=10s --timeout=6s --start-period=20s --retries=3 \
+  CMD curl -fsS --max-time 4 "http://127.0.0.1:${INGRESS_PORT:-8099}/api/status" >/dev/null || exit 1
 
 # Painel web (acessado via Ingress do Home Assistant)
 EXPOSE 8099

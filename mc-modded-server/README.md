@@ -53,7 +53,7 @@ o painel segura o servidor parado até você iniciar de novo.
 
 | Sintoma | Causa / solução |
 |---|---|
-| Add-on fica em **"Iniciando"** e o painel mostra *"O aplicativo está iniciando…"* | O container está reiniciando em loop. Veja o **Log**: várias linhas `[addon] MC Modded Server iniciando...` seguidas de `Failed to bind to port` = o servidor anterior ainda encerrando. Atualize para a versão ≥ 1.1.1, que resolve isso. |
+| Add-on fica em **"Iniciando"** e o painel mostra *"O aplicativo está iniciando…"* | **Versão ≥ 1.1.2:** o Supervisor exige um healthcheck ativo para marcar o add-on como "iniciado"; `HEALTHCHECK NONE` deixava o estado preso em "iniciando" para sempre (mesmo com o servidor rodando). A 1.1.2 usa um healthcheck do painel e resolve em ~10s. Se o Log mostrar várias linhas `[addon] MC Modded Server iniciando...` seguidas de `Failed to bind to port`, é um loop de reinício (também corrigido na 1.1.1+). |
 | Log repete `EULA ainda não aceita` | Defina `eula: true` nas configurações do add-on e reinicie. |
 | Servidor inicia e some (reinicia sozinho) | Falta de RAM: NeoForge/Forge precisam de ≥ 4G livres no host. Diminua `memory` ou libere RAM do Home Assistant. O kernel mata o Java (OOM) e o add-on reinicia. |
 | Painel carrega, mas o Minecraft demora | Normal no **primeiro start** com mods (download do loader + mods + geração do mundo). O painel já funciona nesse meio-tempo. |
