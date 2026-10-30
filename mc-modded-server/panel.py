@@ -44,7 +44,7 @@ SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 # O Supervisor do HA injeta INGRESS_PORT quando o add-on usa ingress;
 # 8099 é apenas o fallback (ex.: execução manual para depuração)
 PORT = int(os.environ.get("INGRESS_PORT") or 8099)
-MAX_UPLOAD = 300 * 1024 * 1024  # 300 MB
+MAX_UPLOAD = 2 * 1024 * 1024 * 1024  # 2 GB (streaming em blocos, não usa RAM)
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -581,7 +581,7 @@ def _stream_multipart_to_file(rfile, total_len, boundary, out_fh, max_bytes):
             return
         written += len(data)
         if written > max_bytes:
-            raise RuntimeError("arquivo grande demais (máx. 300 MB)")
+            raise RuntimeError(f"arquivo grande demais (máx. {MAX_UPLOAD // (1024 * 1024)} MB)")
         out_fh.write(data)
 
     # procura o boundary de fechamento no conteúdo já bufferizado
@@ -888,7 +888,8 @@ class Handler(BaseHTTPRequestHandler):
                           "created": int(st.st_mtime)})
         self._json({"backups": items,
                     "keep": int(options().get("backup_keep") or 7),
-                    "running": server_running()})
+                    "running": server_running(),
+                    "max_upload": MAX_UPLOAD})
 
     def api_backup_create(self):
         if server_running():
@@ -1053,14 +1054,15 @@ class Handler(BaseHTTPRequestHandler):
         files = parse_multipart(self._body(), ctype)
         if not files:
             return self._error("nenhum arquivo recebido")
+        max_mod = 300 * 1024 * 1024  # mods são lidos inteiros na RAM: limite menor
         saved = []
         for raw_name, content in files:
             name = Path(raw_name).name
             if not name.endswith(".jar"):
                 saved.append(f"{name}: ignorado (só .jar)")
                 continue
-            if len(content) > MAX_UPLOAD:
-                saved.append(f"{name}: arquivo grande demais")
+            if len(content) > max_mod:
+                saved.append(f"{name}: arquivo grande demais (máx. 300 MB)")
                 continue
             (MODS_DIR / name).write_bytes(content)
             saved.append(f"{name}: enviado")

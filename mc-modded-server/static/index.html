@@ -502,6 +502,7 @@
 <script>
 const $ = id => document.getElementById(id);
 let serverRunning = false;
+let bkMaxUpload = 2 * 1024 * 1024 * 1024;  // limite de upload de backup (vem da API)
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -519,6 +520,7 @@ function toast(msg, err) {
 }
 
 function fmtSize(b) {
+  if (b > 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
   if (b > 1048576) return (b / 1048576).toFixed(1) + ' MB';
   if (b > 1024) return (b / 1024).toFixed(0) + ' KB';
   return b + ' B';
@@ -878,6 +880,7 @@ async function loadBackups() {
   try {
     const d = await api('api/backups');
     $('bkKeep').textContent = d.keep || 7;
+    if (d.max_upload) bkMaxUpload = d.max_upload;
     const body = $('bkBody');
     body.innerHTML = '';
     if (!d.backups.length) {
@@ -922,7 +925,7 @@ function backupUpload() {
   const f = $('bkFile').files[0];
   if (!f) return toast('Selecione um .zip de backup', true);
   if (serverRunning) return toast('Pare o servidor antes de restaurar.', true);
-  if (f.size > 300 * 1024 * 1024) return toast('Arquivo grande demais (máx. 300 MB)', true);
+  if (f.size > bkMaxUpload) return toast(`Arquivo grande demais (máx. ${fmtSize(bkMaxUpload)})`, true);
   if (!confirm(`Restaurar "${f.name}" do seu computador?\n\nUm backup de segurança do mundo atual é criado antes.`)) return;
   const fd = new FormData();
   fd.append('file', f, f.name);
