@@ -112,6 +112,23 @@ apply_env() {
 # SIGTERM (um `sleep` simples só deixaria o trap rodar ao terminar)
 nap() { sleep "$1" & wait $! 2>/dev/null; }
 
+# O painel web roda como root e o servidor roda como 'mc' (uid 1000). Arquivos
+# de jogo criados/alterados pelo painel precisam pertencer ao 'mc', senão o init
+# do itzg falha com "Permission denied" (ex.: /data/whitelist.json) e o servidor
+# entra em loop de reinício com código 1.
+fix_data_ownership() {
+  chown mc:mc /data 2>/dev/null || true
+  local f d
+  for f in whitelist.json ops.json banned-players.json banned-ips.json \
+           usercache.json eula.txt server.properties; do
+    [ -e "/data/$f" ] && chown mc:mc "/data/$f" 2>/dev/null
+  done
+  for d in "${LEVEL_NAME:-world}" logs cache crash-reports libraries versions \
+           assets config defaultconfigs mods neoform runs; do
+    [ -d "/data/$d" ] && chown mc:mc "/data/$d" 2>/dev/null
+  done
+}
+
 # --- Loop do servidor ---------------------------------------------------------
 # Flags de estado:
 #   stopping = 1  -> o add-on recebeu SIGTERM (parar/reiniciar pelo HA) e deve
@@ -166,6 +183,7 @@ while true; do
   done
 
   echo "[addon] Loader=${TYPE:-?} Versão=${VERSION:-?} Memória=${MEMORY:-?}"
+  fix_data_ownership
   /image/scripts/start &
   child=$!
   wait "$child"

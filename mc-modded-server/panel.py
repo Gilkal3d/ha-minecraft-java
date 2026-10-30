@@ -15,6 +15,7 @@ Funcionalidades:
 import json
 import mimetypes
 import os
+import pwd
 import re
 import socket
 import struct
@@ -253,6 +254,54 @@ def _fs_name(name):
     return name
 
 
+# ------------------------------------------------- propriedade de arquivos
+# O painel roda como root, mas o servidor Minecraft roda como 'mc' (uid 1000).
+# Arquivos de jogo criados pelo painel precisam pertencer ao 'mc', senão o
+# init do itzg falha com "Permission denied" (ex.: /data/whitelist.json) e o
+# servidor entra em loop de reinício.
+def _mc_ids():
+    try:
+        u = pwd.getpwnam("mc")
+        return u.pw_uid, u.pw_gid
+    except Exception:
+        return None
+
+
+def as_mc(path):
+    """Entrega ao usuário 'mc' a propriedade de um arquivo/pasta."""
+    ids = _mc_ids()
+    if not ids:
+        return
+    try:
+        os.chown(path, ids[0], ids[1])
+    except OSError:
+        pass
+
+
+def as_mc_tree(root):
+    """as_mc recursivo — para mundos restaurados ou pastas enviadas."""
+    ids = _mc_ids()
+    if not ids:
+        return
+    for dirpath, dirs, files in os.walk(root):
+        for name in dirs + files:
+            try:
+                os.chown(os.path.join(dirpath, name), ids[0], ids[1])
+            except OSError:
+                pass
+
+
+def as_mc_chain(path):
+    """as_mc em path e em todos os ascendentes até /data — garante que o 'mc'
+    consiga criar arquivos dentro das pastas que o painel criou."""
+    cur = path
+    while True:
+        as_mc(cur)
+        if cur == DATA or cur.parent == cur:
+            break
+        cur = cur.parent
+
+
 # ------------------------------------------------------- upload em blocos (PC)
 # O ingress do Supervisor do Home Assistant rejeita corpos maiores que 16 MB
 # com 413 (issue home-assistant/supervisor#2950). Por isso o painel envia o
@@ -322,6 +371,15 @@ def _restore_worker(name):
                         f"(livre: {free // 1048576} MB, necessário: ~{zsize * 2 // 1048576} MB)")
                 _restore_set("extracting", f"Restaurando {name}…")
                 zf.extractall(DATA)
+                # o zip veio do PC: os arquivos extraídos são do root; o
+                # servidor roda como 'mc' e precisa deles graváveis
+                _restore_set("extracting", "Ajustando permissões dos arquivos…")
+                for top in sorted({i.filename.split("/", 1)[0] for i in infos}):
+                    p = DATA / top
+                    if p.is_dir():
+                        as_mc_tree(p)
+                    elif p.exists():
+                        as_mc(p)
         except RuntimeError as e:
             _restore_set("error", str(e))
             return
@@ -865,6 +923,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error("Pare o servidor antes de salvar server.properties")
                 data = json.loads(self._body() or b"{}")
                 PROPS_FILE.write_text(data.get("content") or "", encoding="utf-8")
+                as_mc(PROPS_FILE)  # servidor ('mc') precisa regravar no exit
                 if query.get("restart"):
                     FLAG_FILE.unlink(missing_ok=True)
                 return self._json({"ok": True})
@@ -1273,6 +1332,7 @@ class Handler(BaseHTTPRequestHandler):
         if target.exists():
             return self._error("já existe algo com esse nome aqui")
         target.mkdir()
+        as_mc_chain(target)  # o servidor 'mc' precisa poder gravar dentro
         self._json({"ok": True})
 
     def api_files_rename(self, query):
@@ -1339,6 +1399,7 @@ class Handler(BaseHTTPRequestHandler):
         base.mkdir(parents=True, exist_ok=True)  # recria subpastas de envio de pasta
         with UPLOAD_LOCK:
             part.replace(base / name)
+        as_mc_chain(base / name)  # arquivo + pastas do caminho ficam do 'mc'
         self._json({"ok": True, "name": name, "size": (base / name).stat().st_size})
 
     # -------- whitelist --------
@@ -1367,6 +1428,7 @@ class Handler(BaseHTTPRequestHandler):
             entries.append({"uuid": mojang_uuid(name, options().get("online_mode", True)),
                             "name": name})
             write_json_file(WHITELIST_FILE, entries)
+            as_mc(WHITELIST_FILE)  # init do itzg grava nele como 'mc'
         return self._json({"ok": True})
 
     def api_whitelist_remove(self, query):
@@ -1379,6 +1441,7 @@ class Handler(BaseHTTPRequestHandler):
         entries = read_json_file(WHITELIST_FILE, [])
         entries = [e for e in entries if e.get("name", "").lower() != name.lower()]
         write_json_file(WHITELIST_FILE, entries)
+        as_mc(WHITELIST_FILE)
         return self._json({"ok": True})
 
     # -------- mods --------
