@@ -13,6 +13,7 @@ Funcionalidades:
   - gerenciador de mods (lista, upload, ativar/desativar, remover, instalar do Modrinth)
 """
 import json
+import mimetypes
 import os
 import re
 import socket
@@ -41,6 +42,7 @@ WHITELIST_FILE = DATA / "whitelist.json"
 BACKUP_DIR = DATA / "backups"
 STATE_FILE = DATA / ".panel_state.json"  # marcas dos agendamentos (uma por dia)
 RESTORE_STATE = DATA / ".restore_state.json"  # estado da restauração em segundo plano
+UPLOAD_DIR = DATA / ".uploads"  # .part de envios em blocos (backups e aba Arquivos)
 HA_URL = "http://supervisor/core/api"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 # O Supervisor do HA injeta INGRESS_PORT quando o add-on usa ingress;
@@ -227,6 +229,30 @@ def _safe_name(name):
     return bool(re.fullmatch(r"backup-[0-9]{8}-[0-9]{6}-[a-z]+\.zip", name or ""))
 
 
+# --------------------------------------------- gerenciador de arquivos (aba)
+def _fs_safe(rel):
+    """Normaliza um caminho relativo dentro de /data e bloqueia traversal.
+
+    Também rejeita componentes ocultos (que começam com "."), protegendo os
+    arquivos internos do add-on (.rcon.json, .uploads, .restore_state.json…).
+    """
+    parts = [p for p in (rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    for p in parts:
+        if p == ".." or p.startswith("."):
+            raise ValueError("caminho inválido")
+    return "/".join(parts)
+
+
+def _fs_name(name):
+    """Valida um nome de arquivo/pasta novo (sem separadores nem caracteres proibidos)."""
+    name = (name or "").strip()
+    if not name or name.startswith(".") or len(name) > 150:
+        raise ValueError("nome inválido")
+    if re.search(r'[/\\:*?"<>|]', name):
+        raise ValueError("nome inválido (caracteres proibidos)")
+    return name
+
+
 # ------------------------------------------------------- upload em blocos (PC)
 # O ingress do Supervisor do Home Assistant rejeita corpos maiores que 16 MB
 # com 413 (issue home-assistant/supervisor#2950). Por isso o painel envia o
@@ -235,6 +261,7 @@ def _safe_name(name):
 INGRESS_CHUNK = 8 * 1024 * 1024
 UPLOAD_LOCK = threading.Lock()
 _UPLOAD_ID_RE = re.compile(r"[a-z0-9-]{8,64}")
+MAX_FILES_UPLOAD = 8 * 1024 * 1024 * 1024  # 8 GB para a aba Arquivos
 
 
 def _upload_part(upload_id):
@@ -244,9 +271,10 @@ def _upload_part(upload_id):
 def _cleanup_parts(max_age=86400):
     """Apaga .part órfãos de envios interrompidos (mais de 24h)."""
     try:
-        for p in BACKUP_DIR.glob(".upload-*.part"):
-            if time.time() - p.stat().st_mtime > max_age:
-                p.unlink(missing_ok=True)
+        for folder in (BACKUP_DIR, UPLOAD_DIR):
+            for p in folder.glob(".upload-*.part"):
+                if time.time() - p.stat().st_mtime > max_age:
+                    p.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -751,6 +779,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_whitelist()
             if path == "/api/mods":
                 return self.api_mods()
+            if path == "/api/files":
+                return self.api_files(query)
+            if path == "/api/files/download":
+                return self.api_files_download(query)
             # SPA: qualquer outra rota serve o index
             return self._static("index.html", "text/html")
         except Exception as e:  # noqa: BLE001
@@ -850,6 +882,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_backup_restore(query)
             if path == "/api/backups/delete":
                 return self.api_backup_delete(query)
+            if path == "/api/files/mkdir":
+                return self.api_files_mkdir(query)
+            if path == "/api/files/rename":
+                return self.api_files_rename(query)
+            if path == "/api/files/delete":
+                return self.api_files_delete(query)
+            if path == "/api/files/upload":
+                return self.api_files_upload(query)
             if path == "/api/mods/upload":
                 return self.api_mods_upload()
             if path == "/api/mods/toggle":
@@ -1000,7 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._upload_final(final, query)
         return self._upload_multipart(ctype)
 
-    def _upload_chunk(self, upload_id, query):
+    def _upload_chunk(self, upload_id, query, part=None, max_bytes=MAX_UPLOAD):
         """Acrescenta um bloco de bytes no arquivo parcial do envio."""
         if not _UPLOAD_ID_RE.fullmatch(upload_id):
             self.close_connection = True
@@ -1019,9 +1059,9 @@ class Handler(BaseHTTPRequestHandler):
         if length > INGRESS_CHUNK * 2:
             self.close_connection = True
             return self._error("bloco grande demais", 413)
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        part = part or _upload_part(upload_id)
+        part.parent.mkdir(parents=True, exist_ok=True)
         _cleanup_parts()
-        part = _upload_part(upload_id)
         remaining = length
         with UPLOAD_LOCK:
             cur = part.stat().st_size if part.exists() else 0
@@ -1029,10 +1069,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self._error(
                     f"offset adiante (servidor já tem {cur} bytes) — reenvie a partir dele")
-            if cur - offset + length > MAX_UPLOAD:
+            if cur - offset + length > max_bytes:
                 self.close_connection = True
                 return self._error(
-                    f"arquivo grande demais (máx. {MAX_UPLOAD // (1048576)} MB)")
+                    f"arquivo grande demais (máx. {max_bytes // (1048576)} MB)")
             try:
                 # offset <= cur: reescreve do offset e corta o resto — assim um
                 # bloco reenviado após falha nunca deixa o zip com sobra
@@ -1163,6 +1203,144 @@ class Handler(BaseHTTPRequestHandler):
             return self._error("log não encontrado", 404)
         self._file(LOG_FILE, "text/plain", "latest.log")
 
+    # -------- gerenciador de arquivos (aba Arquivos) --------
+    def api_files(self, query):
+        try:
+            rel = _fs_safe((query.get("path") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        base = DATA / rel if rel else DATA
+        if not base.is_dir():
+            return self._error("pasta não encontrada", 404)
+        entries = []
+        for p in sorted(base.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if p.name.startswith(".") or p.is_symlink():
+                continue  # ocultos = internos do add-on; symlink = fora do padrão
+            try:
+                st = p.stat()
+            except OSError:
+                continue  # link quebrado
+            entries.append({"name": p.name, "is_dir": p.is_dir(),
+                            "size": st.st_size, "mtime": int(st.st_mtime)})
+        self._json({"path": rel, "entries": entries, "max_upload": MAX_FILES_UPLOAD})
+
+    def api_files_download(self, query):
+        try:
+            rel = _fs_safe((query.get("path") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        p = DATA / rel
+        if not rel or not p.exists():
+            return self._error("arquivo não encontrado", 404)
+        # link não pode apontar para fora do /data
+        rp = p.resolve()
+        if not str(rp).startswith(str(DATA.resolve())):
+            return self._error("caminho inválido")
+        if rp.is_dir():
+            # pasta vira .zip em disco e é enviado em blocos (sem carregar na RAM)
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = UPLOAD_DIR / f"dl-{uuidlib.uuid4().hex}.zip"
+
+            def _add_all(zf, root, arc):
+                # zip completo da pasta: sem a regra de "pastas irrelevantes"
+                # do backup de mundo (aqui o usuário baixa o que pediu)
+                for child in sorted(root.iterdir()):
+                    ca = f"{arc}/{child.name}"
+                    if child.is_dir():
+                        if not child.name.startswith("."):
+                            _add_all(zf, child, ca)
+                    elif not child.name.startswith("."):
+                        zf.write(child, ca)
+
+            try:
+                with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                    _add_all(zf, rp, rp.name)
+                self._file(tmp, "application/zip", p.name + ".zip")
+            finally:
+                tmp.unlink(missing_ok=True)
+        else:
+            ctype = ("application/zip" if rp.suffix.lower() == ".zip"
+                     else mimetypes.guess_type(rp.name)[0] or "application/octet-stream")
+            self._file(rp, ctype, rp.name)
+
+    def api_files_mkdir(self, query):
+        try:
+            rel = _fs_safe((query.get("path") or [""])[0])
+            name = _fs_name((query.get("name") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        target = (DATA / rel if rel else DATA) / name
+        if target.exists():
+            return self._error("já existe algo com esse nome aqui")
+        target.mkdir()
+        self._json({"ok": True})
+
+    def api_files_rename(self, query):
+        try:
+            rel = _fs_safe((query.get("path") or [""])[0])
+            name = _fs_name((query.get("new") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        if not rel:
+            return self._error("não é possível renomear a raiz")
+        src = DATA / rel
+        if not src.exists():
+            return self._error("arquivo não encontrado", 404)
+        dst = src.parent / name
+        if dst.exists():
+            return self._error("já existe algo com esse nome aqui")
+        src.rename(dst)
+        self._json({"ok": True})
+
+    def api_files_delete(self, query):
+        try:
+            rel = _fs_safe((query.get("path") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        if not rel:
+            return self._error("não é possível excluir a raiz")
+        src = DATA / rel
+        if not src.exists() and not src.is_symlink():
+            return self._error("arquivo não encontrado", 404)
+        if src.is_symlink():
+            src.unlink()  # remove só o link, nunca o alvo
+        elif src.is_dir():
+            shutil.rmtree(src)
+        else:
+            src.unlink()
+        self._json({"ok": True})
+
+    def api_files_upload(self, query):
+        """Envio em blocos para a aba Arquivos (mesmo mecanismo dos backups)."""
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        chunk = (query.get("chunk") or [""])[0]
+        final = (query.get("final") or [""])[0]
+        if chunk:
+            part = UPLOAD_DIR / f".upload-{chunk}.part"
+            return self._upload_chunk(chunk, query, part=part,
+                                      max_bytes=MAX_FILES_UPLOAD)
+        if final:
+            return self._files_upload_final(final, query)
+        return self._error("requisição inválida")
+
+    def _files_upload_final(self, upload_id, query):
+        """Promove o .part completo para o destino (criando subpastas se preciso)."""
+        if not _UPLOAD_ID_RE.fullmatch(upload_id):
+            return self._error("id de upload inválido")
+        try:
+            rel = _fs_safe((query.get("dir") or [""])[0])
+            name = _fs_name((query.get("name") or [""])[0])
+        except ValueError as e:
+            return self._error(str(e))
+        part = UPLOAD_DIR / f".upload-{upload_id}.part"
+        if not part.exists() or part.stat().st_size == 0:
+            return self._error("nenhum dado recebido para este envio")
+        base = DATA / rel if rel else DATA
+        base.mkdir(parents=True, exist_ok=True)  # recria subpastas de envio de pasta
+        with UPLOAD_LOCK:
+            part.replace(base / name)
+        self._json({"ok": True, "name": name, "size": (base / name).stat().st_size})
+
     # -------- whitelist --------
     def api_whitelist(self):
         entries = read_json_file(WHITELIST_FILE, [])
@@ -1264,16 +1442,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------- download de arquivos --------
     def _file(self, path, ctype, download_name):
-        data = path.read_bytes()
+        # envio em blocos: arquivos de vários GB não carregam na RAM
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(path.stat().st_size))
         self.send_header(
             "Content-Disposition",
             f'attachment; filename="{re.sub(r"[^A-Za-z0-9._-]", "_", download_name)}"')
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        with open(path, "rb") as fh:
+            shutil.copyfileobj(fh, self.wfile, 65536)
 
     # -------- arquivos estáticos --------
     def _static(self, rel, ctype):

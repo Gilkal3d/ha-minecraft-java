@@ -47,6 +47,7 @@ Construído sobre a imagem oficial
 | **Configurações** | Formulário completo em **português**, cada opção explicando para que serve: loader, versão, RAM, MOTD, dificuldade, modo de jogo, PvP, Nether, whitelist, ops, mods do Modrinth, RCON etc. Inclui **agendamentos** (restart e backup diários) e **notificações no Home Assistant**. Salva e reinicia o servidor em um clique. |
 | **server.properties** | Editor de texto completo; salva com o servidor parado. |
 | **Mods** | Instala do Modrinth por slug (versão compatível + dependências), envia `.jar`, ativa/desativa/exclui mods. |
+| **Arquivos** | **Gerenciador de arquivos** do `/data`: navega por pastas, **envia arquivos e pastas inteiras** (em blocos de 8 MB, com estrutura de subpastas recriada), **baixa** arquivos e pastas (pastas viram `.zip`), **renomeia**, **exclui** e **cria pastas**. Arquivos internos do add-on ficam protegidos. |
 
 Start/Stop/Reiniciar no cabeçalho: o **parar** é gracioso (envia `/stop` via RCON);
 o painel segura o servidor parado até você iniciar de novo.

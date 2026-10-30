@@ -130,6 +130,7 @@
   <button data-tab="tabConsole" onclick="showTab(this)">Console</button>
   <button data-tab="tabPlayers" onclick="showTab(this)">Jogadores</button>
   <button data-tab="tabBackups" onclick="showTab(this)">Backups</button>
+  <button data-tab="tabFiles" onclick="showTab(this)">Arquivos</button>
   <button data-tab="tabSettings" onclick="showTab(this)">Configurações</button>
   <button data-tab="tabProps" onclick="showTab(this)">server.properties</button>
   <button data-tab="tabMods" onclick="showTab(this)">Mods</button>
@@ -257,6 +258,38 @@
         <thead><tr><th>Arquivo</th><th>Data</th><th>Tamanho</th><th style="width:240px"></th></tr></thead>
         <tbody id="bkBody"></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- ==================== ARQUIVOS ==================== -->
+  <section id="tabFiles" class="hidden">
+    <div class="card">
+      <h2>📁 Arquivos do servidor</h2>
+      <div class="row" style="margin-bottom:12px">
+        <button onclick="fsUp()">⬆ Subir</button>
+        <button onclick="fsMkdir()">📁 Nova pasta</button>
+        <button onclick="fsPick(false)">📤 Enviar arquivos</button>
+        <button onclick="fsPick(true)">📤 Enviar pasta</button>
+        <button onclick="loadFiles(fsPath)">Atualizar</button>
+        <input type="file" id="fsFiles" multiple class="hidden">
+        <input type="file" id="fsFolder" webkitdirectory class="hidden">
+      </div>
+      <div class="muted" style="margin-bottom:8px"><a href="#" onclick="fsGo(event, '')">📁 /data</a><span id="fsCrumb"></span></div>
+      <div id="fsProg" class="hidden" style="margin-bottom:12px">
+        <div class="row" style="justify-content:space-between">
+          <span class="muted" id="fsProgLabel">Enviando…</span>
+          <span class="muted" id="fsProgPct">0%</span>
+        </div>
+        <div class="progress" style="margin-top:6px"><div id="fsProgFill" style="width:0%"></div></div>
+      </div>
+      <table>
+        <thead><tr><th>Nome</th><th>Tamanho</th><th>Modificado</th><th style="width:260px"></th></tr></thead>
+        <tbody id="fsBody"></tbody>
+      </table>
+      <p class="muted" style="margin-bottom:0">
+        Os <code>.</code> ocultos (configuração interna do add-on) não aparecem nem podem ser mexidos.
+        Pastas baixadas viram <code>.zip</code>. Evite mexer na pasta do mundo com o servidor rodando.
+      </p>
     </div>
   </section>
 
@@ -538,6 +571,7 @@ function showTab(btn) {
   if (btn.dataset.tab === 'tabConsole') loadConsole();
   if (btn.dataset.tab === 'tabPlayers') { loadPlayers(); loadWhitelist(); }
   if (btn.dataset.tab === 'tabBackups') loadBackups();
+  if (btn.dataset.tab === 'tabFiles') loadFiles(fsPath);
   if (btn.dataset.tab === 'tabSettings') loadSettings();
   if (btn.dataset.tab === 'tabProps') loadProps();
   if (btn.dataset.tab === 'tabMods') loadMods();
@@ -924,6 +958,40 @@ function paintRestore(r) {
   return active;
 }
 
+// Envio em blocos compartilhado (aba Backups e aba Arquivos): o ingress do HA
+// corta requisições acima de 16 MB (HTTP 413), então o arquivo vai em pedaços
+// de 8 MB. Retorna o id do envio para o chamador finalizar com ?final=<id>.
+async function sendChunks(endpoint, file, onProgress) {
+  const CHUNK = 8 * 1024 * 1024;
+  const uid = (crypto.randomUUID ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+  let sent = 0;
+  for (let off = 0; off < file.size; off += CHUNK) {
+    const blob = file.slice(off, Math.min(off + CHUNK, file.size));
+    let lastErr = 'falha de rede';
+    let ok = false;
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+      try {
+        const res = await fetch(`${endpoint}?chunk=${uid}&offset=${off}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+        if (res.ok) { ok = true; break; }
+        const err = await res.json().catch(() => ({}));
+        lastErr = err.error || ('HTTP ' + res.status);
+        // 4xx (exceto 429) é erro definitivo: adianta nada reenviar o bloco
+        if (res.status < 500 && res.status !== 429) throw { fatal: true };
+      } catch (e2) {
+        if (e2 && e2.fatal) throw new Error(lastErr);
+        // erro de rede: tenta o mesmo bloco de novo
+      }
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
+      else throw new Error(lastErr);
+    }
+    sent += blob.size;
+    if (onProgress) onProgress(sent);
+  }
+  return uid;
+}
+
 let restoreTimer = null;
 function pollRestore() {
   if (restoreTimer) return;  // já está acompanhando
@@ -965,42 +1033,12 @@ async function backupUpload() {
   if (serverRunning) return toast('Pare o servidor antes de restaurar.', true);
   if (f.size > bkMaxUpload) return toast(`Arquivo grande demais (máx. ${fmtSize(bkMaxUpload)})`, true);
   if (!confirm(`Restaurar "${f.name}" do seu computador?\n\nUm backup de segurança do mundo atual é criado antes.`)) return;
-  // Envio em blocos: o ingress do HA corta requisições acima de 16 MB (HTTP 413),
-  // então dividimos o arquivo em pedaços de 8 MB que passam direto.
-  const CHUNK = 8 * 1024 * 1024;
-  const uid = (crypto.randomUUID ? crypto.randomUUID()
-    : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
   const bar = $('bkProg'), fill = $('bkProgFill'), pct = $('bkProgPct');
   bar.classList.remove('hidden');
   fill.style.width = '0%'; pct.textContent = '0%';
-  const setPct = p => { fill.style.width = p + '%'; pct.textContent = p + '%'; };
-  const fail = msg => { bar.classList.add('hidden'); toast(msg, true); };
-  let sent = 0;
   try {
-    for (let off = 0; off < f.size; off += CHUNK) {
-      const blob = f.slice(off, Math.min(off + CHUNK, f.size));
-      let lastErr = 'falha de rede';
-      let ok = false;
-      for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
-        try {
-          const res = await fetch(
-            `api/backups/upload?chunk=${uid}&offset=${off}`,
-            { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
-          if (res.ok) { ok = true; break; }
-          const err = await res.json().catch(() => ({}));
-          lastErr = err.error || ('HTTP ' + res.status);
-          // 4xx (exceto 429) é erro definitivo: adianta nada reenviar o bloco
-          if (res.status < 500 && res.status !== 429) throw { fatal: true };
-        } catch (e2) {
-          if (e2 && e2.fatal) throw new Error(lastErr);
-          // erro de rede: tenta o mesmo bloco de novo
-        }
-        if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
-        else throw new Error(lastErr);
-      }
-      sent += blob.size;
-      setPct(Math.round(sent / f.size * 100));
-    }
+    const uid = await sendChunks('api/backups/upload', f,
+      n => { const p = Math.round(n / f.size * 100); fill.style.width = p + '%'; pct.textContent = p + '%'; });
     const up = await api(
       `api/backups/upload?final=${uid}&name=${encodeURIComponent(f.name)}`,
       { method: 'POST' });
@@ -1008,7 +1046,8 @@ async function backupUpload() {
     $('bkFile').value = '';
     restoreUploaded(up.name);
   } catch (e) {
-    fail('Falha no envio: ' + e.message);
+    bar.classList.add('hidden');
+    toast('Falha no envio: ' + e.message, true);
     loadBackups();
   }
 }
@@ -1038,6 +1077,158 @@ async function backupDelete(name) {
     toast('Backup excluído.');
     loadBackups();
   } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- gerenciador de arquivos ---------------- */
+let fsPath = '';
+
+function fsGo(ev, p) {
+  if (ev) ev.preventDefault();
+  loadFiles(p);
+}
+
+function fsUp() {
+  loadFiles(fsPath.split('/').slice(0, -1).join('/'));
+}
+
+async function loadFiles(path) {
+  try {
+    const d = await api('api/files?path=' + encodeURIComponent(path || ''));
+    fsPath = d.path;
+    if (d.max_upload) bkMaxUpload = d.max_upload;
+    // trilha de navegação
+    const crumb = $('fsCrumb');
+    crumb.innerHTML = '';
+    let acc = '';
+    for (const part of (fsPath ? fsPath.split('/') : [])) {
+      acc = acc ? acc + '/' + part : part;
+      const sep = document.createTextNode(' › ');
+      const a = document.createElement('a');
+      a.href = '#'; a.textContent = part;
+      a.onclick = e => fsGo(e, acc);
+      crumb.append(sep, a);
+    }
+    const body = $('fsBody');
+    body.innerHTML = '';
+    if (!d.entries.length) {
+      body.innerHTML = '<tr><td colspan="4" class="muted">Pasta vazia.</td></tr>';
+      return;
+    }
+    for (const ent of d.entries) {
+      const rel = fsPath ? fsPath + '/' + ent.name : ent.name;
+      const tr = document.createElement('tr');
+      const tdN = document.createElement('td');
+      if (ent.is_dir) {
+        const a = document.createElement('a');
+        a.href = '#'; a.textContent = '📁 ' + ent.name;
+        a.onclick = e => fsGo(e, rel);
+        tdN.appendChild(a);
+      } else {
+        tdN.textContent = '📄 ' + ent.name;
+        tdN.style.font = '12px ui-monospace, monospace';
+      }
+      const tdS = document.createElement('td'); tdS.className = 'muted';
+      tdS.textContent = ent.is_dir ? '—' : fmtSize(ent.size);
+      const tdD = document.createElement('td'); tdD.className = 'muted';
+      tdD.textContent = new Date(ent.mtime * 1000).toLocaleString('pt-BR');
+      const tdA = document.createElement('td'); tdA.className = 'row';
+      const dl = document.createElement('a');
+      dl.href = 'api/files/download?path=' + encodeURIComponent(rel);
+      dl.textContent = '⬇ Baixar'; dl.style.marginRight = '8px';
+      tdA.appendChild(dl);
+      const rn = document.createElement('button');
+      rn.textContent = '✎ Renomear';
+      rn.style.marginRight = '8px';
+      rn.onclick = () => fsRename(rel, ent.name);
+      tdA.appendChild(rn);
+      const del = document.createElement('button');
+      del.textContent = '🗑 Excluir';
+      del.onclick = () => fsDelete(rel, ent.name, ent.is_dir);
+      tdA.appendChild(del);
+      tr.append(tdN, tdS, tdD, tdA);
+      body.appendChild(tr);
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function fsMkdir() {
+  const name = (prompt('Nome da nova pasta:') || '').trim();
+  if (!name) return;
+  try {
+    await api(`api/files/mkdir?path=${encodeURIComponent(fsPath)}&name=${encodeURIComponent(name)}`,
+      { method: 'POST' });
+    toast('Pasta criada.');
+    loadFiles(fsPath);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function fsRename(rel, name) {
+  const nu = (prompt('Novo nome:', name) || '').trim();
+  if (!nu || nu === name) return;
+  try {
+    await api(`api/files/rename?path=${encodeURIComponent(rel)}&new=${encodeURIComponent(nu)}`,
+      { method: 'POST' });
+    toast('Renomeado.');
+    loadFiles(fsPath);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function fsDelete(rel, name, isDir) {
+  let extra = isDir ? '\n\nA pasta e TODO o conteúdo dela serão apagados.' : '';
+  if (serverRunning) extra += '\n⚠️ O servidor está rodando — evite mexer na pasta do mundo.';
+  if (!confirm(`Excluir "${name}"?${extra}`)) return;
+  try {
+    await api(`api/files/delete?path=${encodeURIComponent(rel)}`, { method: 'POST' });
+    toast('Excluído.');
+    loadFiles(fsPath);
+  } catch (e) { toast(e.message, true); }
+}
+
+function fsPick(isDir) {
+  const inp = $(isDir ? 'fsFolder' : 'fsFiles');
+  inp.onchange = () => { fsUpload(inp.files); inp.value = ''; };
+  inp.click();
+}
+
+async function fsUpload(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  if (serverRunning && !confirm(
+    'O servidor está rodando.\nEvite enviar coisas para a pasta do mundo enquanto ele está em uso. Enviar mesmo assim?')) return;
+  const bar = $('fsProg'), fill = $('fsProgFill'), pct = $('fsProgPct'), label = $('fsProgLabel');
+  bar.classList.remove('hidden');
+  const total = list.reduce((s, f) => s + f.size, 0);
+  let done = 0, ok = 0;
+  const setBar = () => {
+    const p = total ? Math.round(done / total * 100) : 100;
+    fill.style.width = p + '%'; pct.textContent = p + '%';
+  };
+  setBar();
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      label.textContent = `Enviando ${i + 1}/${list.length}: ${f.name}`;
+      if (f.size > bkMaxUpload) {
+        toast(`${f.name}: grande demais (máx. ${fmtSize(bkMaxUpload)})`, true);
+        done += f.size; setBar(); continue;
+      }
+      // envio de pasta: recria a estrutura de subpastas no destino
+      const rel = f.webkitRelativePath || f.name;
+      const slash = rel.lastIndexOf('/');
+      const sub = slash > 0 ? rel.slice(0, slash) : '';
+      const dir = fsPath ? (sub ? fsPath + '/' + sub : fsPath) : sub;
+      const base = done;
+      const uid = await sendChunks('api/files/upload', f, n => { done = base + n; setBar(); });
+      await api(`api/files/upload?final=${uid}&dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(f.name)}`,
+        { method: 'POST' });
+      done = base + f.size; ok++; setBar();
+    }
+    toast(`${ok}/${list.length} arquivo(s) enviado(s).`);
+  } catch (e) {
+    toast('Falha no envio: ' + e.message, true);
+  }
+  bar.classList.add('hidden');
+  loadFiles(fsPath);
 }
 
 /* ---------------- whitelist ---------------- */
