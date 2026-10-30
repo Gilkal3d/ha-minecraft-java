@@ -250,6 +250,9 @@
         </div>
         <div class="progress" style="margin-top:6px"><div id="bkProgFill" style="width:0%"></div></div>
       </div>
+      <div id="bkRestore" class="banner hidden" style="margin-bottom:12px">
+        <span id="bkRestoreMsg">Restauração em andamento…</span>
+      </div>
       <table>
         <thead><tr><th>Arquivo</th><th>Data</th><th>Tamanho</th><th style="width:240px"></th></tr></thead>
         <tbody id="bkBody"></tbody>
@@ -881,6 +884,7 @@ async function loadBackups() {
     const d = await api('api/backups');
     $('bkKeep').textContent = d.keep || 7;
     if (d.max_upload) bkMaxUpload = d.max_upload;
+    if (paintRestore(d.restore)) pollRestore();
     const body = $('bkBody');
     body.innerHTML = '';
     if (!d.backups.length) {
@@ -910,6 +914,40 @@ async function loadBackups() {
       tr.append(tdN, tdD, tdS, tdA); body.appendChild(tr);
     }
   } catch (e) { toast(e.message, true); }
+}
+
+function paintRestore(r) {
+  const box = $('bkRestore'), msg = $('bkRestoreMsg');
+  const active = r && ['queued', 'pre-backup', 'extracting'].includes(r.status);
+  box.classList.toggle('hidden', !active);
+  if (active) msg.textContent = r.message || 'Restauração em andamento…';
+  return active;
+}
+
+let restoreTimer = null;
+function pollRestore() {
+  if (restoreTimer) return;  // já está acompanhando
+  const tick = async () => {
+    try {
+      const st = await api('api/backups/restore_status');
+      const active = paintRestore(st);
+      if (st.status === 'done') {
+        toast(st.message || 'Backup restaurado! Inicie o servidor.');
+        clearInterval(restoreTimer); restoreTimer = null;
+        loadBackups(); loadStatus();
+        return;
+      }
+      if (st.status === 'error') {
+        toast('Restauração falhou: ' + (st.message || 'erro desconhecido'), true);
+        clearInterval(restoreTimer); restoreTimer = null;
+        $('bkRestore').classList.add('hidden');
+        return;
+      }
+      if (!active) { clearInterval(restoreTimer); restoreTimer = null; }
+    } catch { /* add-on reiniciando */ }
+  };
+  tick();
+  restoreTimer = setInterval(tick, 2000);
 }
 
 async function backupCreate() {
@@ -960,10 +998,9 @@ function backupUpload() {
 
 async function restoreUploaded(name) {
   try {
-    const d = await api(`api/backups/restore?name=${encodeURIComponent(name)}`, { method: 'POST' });
-    toast(d.message || 'Backup restaurado.');
-    loadBackups();
-    loadStatus();
+    await api(`api/backups/restore?name=${encodeURIComponent(name)}`, { method: 'POST' });
+    toast('Restauração iniciada — acompanhe o status abaixo.');
+    pollRestore();
   } catch (e) { toast(e.message, true); loadBackups(); }
 }
 
@@ -971,9 +1008,9 @@ async function backupRestore(name, running) {
   if (running) return toast('Pare o servidor antes de restaurar.', true);
   if (!confirm(`Restaurar "${name}"?\n\nIsso SOBRESCREVE o mundo atual (um backup de segurança é criado antes).`)) return;
   try {
-    const d = await api(`api/backups/restore?name=${encodeURIComponent(name)}`, { method: 'POST' });
-    toast(d.message || 'Backup restaurado.');
-    loadStatus();
+    await api(`api/backups/restore?name=${encodeURIComponent(name)}`, { method: 'POST' });
+    toast('Restauração iniciada — acompanhe o status abaixo.');
+    pollRestore();
   } catch (e) { toast(e.message, true); }
 }
 

@@ -17,6 +17,7 @@ import os
 import re
 import socket
 import struct
+import shutil
 import subprocess
 import threading
 import time
@@ -39,6 +40,7 @@ PROPS_FILE = DATA / "server.properties"
 WHITELIST_FILE = DATA / "whitelist.json"
 BACKUP_DIR = DATA / "backups"
 STATE_FILE = DATA / ".panel_state.json"  # marcas dos agendamentos (uma por dia)
+RESTORE_STATE = DATA / ".restore_state.json"  # estado da restauração em segundo plano
 HA_URL = "http://supervisor/core/api"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 # O Supervisor do HA injeta INGRESS_PORT quando o add-on usa ingress;
@@ -223,6 +225,57 @@ def prune_backups():
 
 def _safe_name(name):
     return bool(re.fullmatch(r"backup-[0-9]{8}-[0-9]{6}-[a-z]+\.zip", name or ""))
+
+
+# ------------------------------------------------- restauração em segundo plano
+def _restore_set(status, message=""):
+    write_json_file(RESTORE_STATE, {"status": status, "message": message,
+                                    "updated": int(time.time())})
+
+
+def _restore_get():
+    st = _read_json(RESTORE_STATE)
+    return {"status": st.get("status", "idle"), "message": st.get("message", ""),
+            "updated": int(st.get("updated", 0))}
+
+
+def restore_busy():
+    """True se uma restauração está em andamento (evita duas ao mesmo tempo)."""
+    st = _restore_get()
+    if st["status"] not in ("queued", "pre-backup", "extracting"):
+        return False
+    return (time.time() - st["updated"]) < 3600  # considera órfã após 1h
+
+
+def _restore_worker(name):
+    """Executa a restauração longa em thread, registrando o progresso em disco."""
+    src = BACKUP_DIR / name
+    try:
+        _restore_set("pre-backup", "Criando backup de segurança do mundo atual…")
+        # valida o zip ANTES de mexer em qualquer coisa
+        try:
+            with zipfile.ZipFile(src) as zf:
+                if zf.testzip() is not None:
+                    raise RuntimeError("o .zip enviado está corrompido")
+                infos = list(zf.infolist())
+                for info in infos:
+                    if info.filename.startswith("/") or ".." in info.filename.split("/"):
+                        raise RuntimeError("backup inválido (caminho suspeito)")
+                # checa espaço em disco: zip + extração (aprox. 2x o tamanho)
+                free = shutil.disk_usage(str(DATA)).free
+                zsize = src.stat().st_size
+                if free < zsize * 2 + 512 * 1024 * 1024:
+                    raise RuntimeError(
+                        f"espaço insuficiente no disco "
+                        f"(livre: {free // 1048576} MB, necessário: ~{zsize * 2 // 1048576} MB)")
+                _restore_set("extracting", f"Restaurando {name}…")
+                zf.extractall(DATA)
+        except RuntimeError as e:
+            _restore_set("error", str(e))
+            return
+        _restore_set("done", f"Backup restaurado: {name}")
+    except Exception as e:  # noqa: BLE001
+        _restore_set("error", f"falha inesperada: {e}")
 
 
 # ---------------------------------------------------------------- HA bridge
@@ -651,6 +704,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_players()
             if path == "/api/backups":
                 return self.api_backups()
+            if path == "/api/backups/restore_status":
+                return self._json(_restore_get())
             if path == "/api/backups/download":
                 return self.api_backup_download(query)
             if path == "/api/log/download":
@@ -889,7 +944,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"backups": items,
                     "keep": int(options().get("backup_keep") or 7),
                     "running": server_running(),
-                    "max_upload": MAX_UPLOAD})
+                    "max_upload": MAX_UPLOAD,
+                    "restore": _restore_get()})
 
     def api_backup_create(self):
         if server_running():
@@ -950,20 +1006,20 @@ class Handler(BaseHTTPRequestHandler):
         src = BACKUP_DIR / name
         if not src.exists():
             return self._error("backup não encontrado", 404)
-        # segurança: faz um backup do estado atual antes de restaurar
+        if restore_busy():
+            return self._error("Já existe uma restauração em andamento")
+        # valida o zip de leve antes de disparar (evita thread morrendo à toa)
         try:
-            make_backup("pre-restore")
-        except Exception:
-            pass
-        level = (options().get("level_name") or "world").strip() or "world"
-        with zipfile.ZipFile(src) as zf:
-            for info in zf.infolist():
-                # evita path traversal
-                if info.filename.startswith("/") or ".." in info.filename.split("/"):
-                    return self._error("backup corrompido (caminho inválido)")
-            zf.extractall(DATA)
-        self._json({"ok": True, "message": "Backup restaurado. Inicie o servidor.",
-                    "level": level})
+            with zipfile.ZipFile(src) as zf:
+                if zf.testzip() is not None:
+                    return self._error("o .zip está corrompido")
+        except zipfile.BadZipFile:
+            return self._error("o arquivo não é um .zip válido")
+        _restore_set("queued", "Restauração enfileirada…")
+        threading.Thread(target=_restore_worker, args=(name,), daemon=True).start()
+        # responde na hora: o trabalho pesado roda em segundo plano
+        self._json({"ok": True, "queued": True, "name": name,
+                    "message": "Restauração iniciada. Acompanhe o progresso abaixo."})
 
     def api_backup_delete(self, query):
         name = (query.get("name") or [""])[0]
