@@ -23,6 +23,7 @@ Construído sobre a imagem oficial
 | `eula` | Aceite da EULA da Mojang. `false` = servidor não inicia. |
 | `loader` | `FABRIC`, `NEOFORGE`, `FORGE`, `VANILLA`, `PAPER` ou `PURPUR`. |
 | `minecraft_version` | Versão do Minecraft, ex.: `1.21.4`, `1.20.1`, `LATEST`. |
+| `loader_version` | Versão fixa do carregador (ex.: NeoForge `21.1.264`, Fabric `0.16.9`). Vazio = recomendada. A Visão geral mostra a versão instalada. |
 | `memory` | RAM do servidor, ex.: `4G`, `8G`. |
 | `aikar_flags` | Flags de JVM afinadas para servidores (recomendado). |
 | `motd`, `max_players`, `online_mode`, `difficulty`, `gamemode`, `pvp`, `allow_nether`, `enable_command_block`, `level_name`, `level_type`, `view_distance` | Propriedades básicas aplicadas a cada start. |

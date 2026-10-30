@@ -70,14 +70,39 @@ def options():
 
 
 # Chaves editáveis pela aba "Configurações" do painel
-SET_KEYS_STR = ["loader", "minecraft_version", "memory", "motd", "difficulty",
-                "gamemode", "level_name", "level_type", "rcon_password",
+SET_KEYS_STR = ["loader", "minecraft_version", "loader_version", "memory", "motd",
+                "difficulty", "gamemode", "level_name", "level_type", "rcon_password",
                 "daily_restart", "daily_backup", "notify_service"]
 SET_KEYS_BOOL = ["eula", "aikar_flags", "online_mode", "pvp", "allow_nether",
                  "enable_command_block", "notifications"]
 SET_KEYS_INT = ["max_players", "view_distance", "backup_keep"]
 SET_KEYS_LIST = ["whitelist", "ops", "modrinth_projects"]
 SET_KEYS = SET_KEYS_STR + SET_KEYS_BOOL + SET_KEYS_INT + SET_KEYS_LIST
+
+
+def installed_loader_version(opts):
+    """Versão do carregador REALMENTE instalada, lida das libraries do servidor.
+
+    NeoForge: libraries/net/neoforge/neoforge/<ver>/
+    Forge:    libraries/net/minecraftforge/forge/<mc>-<ver>/
+    Fabric:   libraries/net/fabricmc/fabric-loader/<ver>/
+    """
+    loader = (opts.get("loader") or "").upper()
+    pat = {"NEOFORGE": "libraries/net/neoforge/neoforge/*",
+           "FORGE": "libraries/net/minecraftforge/forge/*",
+           "FABRIC": "libraries/net/fabricmc/fabric-loader/*"}.get(loader)
+    if not pat:
+        return ""  # VANILLA/PAPER/PURPUR não têm versão de carregador
+    try:
+        hits = sorted(DATA.glob(pat))
+    except Exception:
+        return ""
+    if not hits:
+        return ""
+    v = hits[-1].name
+    if loader == "FORGE" and "-" in v:
+        v = v.split("-", 1)[1]  # "1.21.1-52.0.16" -> "52.0.16"
+    return v
 
 
 def rcon_password():
@@ -988,6 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             "stopped_by_user": FLAG_FILE.exists(),
             "eula": (opts.get("eula") is True),
             "loader": opts.get("loader"),
+            "loader_version": installed_loader_version(opts) or (opts.get("loader_version") or ""),
             "version": opts.get("minecraft_version"),
             "memory": opts.get("memory"),
             "motd": opts.get("motd"),
@@ -1460,6 +1486,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({
             "mods": mods,
             "loader": opts.get("loader"),
+            "loader_version": installed_loader_version(opts) or (opts.get("loader_version") or ""),
             "version": opts.get("minecraft_version"),
             "running": server_running(),
         })

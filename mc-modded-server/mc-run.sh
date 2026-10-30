@@ -46,6 +46,17 @@ apply_env() {
   export TYPE="$(get '.loader')"
   export VERSION="$(get '.minecraft_version')"
   export MEMORY="$(get '.memory')"
+
+  # Versão fixa do carregador (vazio = recomendada/mais recente do itzg).
+  # Serve para casar com a versão instalada no client do jogador.
+  LOADER_V="$(get '.loader_version')"
+  if [ -n "$LOADER_V" ]; then
+    case "$TYPE" in
+      NEOFORGE) export NEOFORGE_VERSION="$LOADER_V" ;;
+      FORGE)    export FORGE_VERSION="$LOADER_V" ;;
+      FABRIC)   export FABRIC_LOADER_VERSION="$LOADER_V" ;;
+    esac
+  fi
   if [ "$(get '.aikar_flags')" = "true" ]; then
     export USE_AIKAR_FLAGS=true
   else

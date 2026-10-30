@@ -329,6 +329,13 @@
             <input type="text" id="s_minecraft_version">
           </div>
           <div class="fld">
+            <label>Versão do carregador (loader)</label>
+            <p class="desc">Ex.: Fabric <code>0.16.9</code>, NeoForge <code>21.1.264</code>, Forge <code>52.0.16</code>.
+              Vazio = baixa a recomendada para a versão do jogo. Fixe a versão para casar com a do seu client
+              (evita "Ligação perdida" ao entrar). A versão instalada aparece na Visão geral.</p>
+            <input type="text" id="s_loader_version" placeholder="recomendada automaticamente">
+          </div>
+          <div class="fld">
             <label>Memória (RAM)</label>
             <p class="desc">Quanta RAM o servidor usa. Ex.: 4G para Fabric leve, 8G para modpack médio. Não passe da RAM total do seu equipamento.</p>
             <input type="text" id="s_memory" placeholder="4G">
@@ -595,7 +602,8 @@ async function loadStatus() {
     serverRunning = s.running;
     $('statusBadge').textContent = s.running ? 'ONLINE' : (s.stopped_by_user ? 'PARADO' : 'AGUARDANDO');
     $('statusBadge').className = 'badge ' + (s.running ? 'on' : 'off');
-    $('loaderInfo').textContent = `${s.loader || '?'} • MC ${s.version || '?'} • ${s.memory || ''}`;
+    $('loaderInfo').textContent =
+      `${s.loader || '?'}${s.loader_version ? ' ' + s.loader_version : ''} • MC ${s.version || '?'} • ${s.memory || ''}`;
     $('playersInfo').textContent = s.players
       ? `👥 ${s.players.online}/${s.players.max}` + (s.players.names ? ` — ${s.players.names}` : '')
       : '';
@@ -614,7 +622,8 @@ async function loadOverview() {
 function paintOverview(s) {
   $('ovDot').className = 'dot ' + (s.running ? 'on' : 'off');
   $('ovStatus').textContent = s.running ? 'Online' : (s.stopped_by_user ? 'Parado' : 'Aguardando');
-  $('ovLoader').textContent = `${s.loader || '?'} • MC ${s.version || '?'} • ${s.memory || ''}`;
+  $('ovLoader').textContent =
+    `${s.loader || '?'}${s.loader_version ? ' ' + s.loader_version : ''} • MC ${s.version || '?'} • ${s.memory || ''}`;
   const ramMax = parseInt((s.memory || '0').replace(/[^0-9]/g, ''), 10) ||
                  (/(G|g)/.test(s.memory || '') ? 4096 : 0);
   $('ovPlayers').textContent = s.players ? `${s.players.online}/${s.players.max}` : '—';
@@ -732,6 +741,7 @@ async function loadSettings() {
     $('s_eula').checked = s.eula === true;
     $('s_loader').value = s.loader || 'FABRIC';
     $('s_minecraft_version').value = s.minecraft_version || '';
+    $('s_loader_version').value = s.loader_version || '';
     $('s_memory').value = s.memory || '';
     $('s_aikar_flags').checked = s.aikar_flags !== false;
     $('s_motd').value = s.motd || '';
@@ -772,6 +782,7 @@ function collectSettings() {
       eula: $('s_eula').checked,
       loader: $('s_loader').value,
       minecraft_version: $('s_minecraft_version').value.trim(),
+      loader_version: $('s_loader_version').value.trim(),
       memory: $('s_memory').value.trim(),
       aikar_flags: $('s_aikar_flags').checked,
       motd: $('s_motd').value.trim(),
@@ -1280,7 +1291,8 @@ async function wlRemove(name) {
 async function loadMods() {
   try {
     const d = await api('api/mods');
-    $('mrInfo').textContent = `— loader ${d.loader} • MC ${d.version}`;
+    $('mrInfo').textContent =
+      `— loader ${d.loader}${d.loader_version ? ' ' + d.loader_version : ''} • MC ${d.version}`;
     const body = $('modsBody');
     body.innerHTML = '';
     if (!d.mods.length) {
