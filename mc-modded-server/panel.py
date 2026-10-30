@@ -540,6 +540,76 @@ def parse_multipart(body, content_type):
     return files
 
 
+def _stream_multipart_to_file(rfile, total_len, boundary, out_fh, max_bytes):
+    """Lê um multipart/form-data em blocos, gravando o conteúdo do primeiro arquivo
+    direto no disco (sem segurar tudo na memória). Retorna o filename, ou None se
+    não achar nenhum arquivo. Levanta RuntimeError se exceder max_bytes.
+
+    O payload tem a forma:
+      --boundary\\r\\n
+      Content-Disposition: form-data; name="file"; filename="x.zip"\\r\\n
+      [headers]\\r\\n
+      \\r\\n
+      <conteúdo do arquivo>
+      \\r\\n--boundary--\\r\\n
+    """
+    chunk = 64 * 1024
+    remaining = total_len
+    # 1) acumula e localiza o fim dos cabeçalhos da primeira parte (\r\n\r\n)
+    buf = b""
+    sep = -1
+    while remaining > 0 and sep == -1:
+        data = rfile.read(min(chunk, remaining))
+        if not data:
+            break
+        remaining -= len(data)
+        buf += data
+        sep = buf.find(b"\r\n\r\n")
+    if sep == -1:
+        return None
+    fm = re.search(rb'filename="([^"]*)"', buf[:sep])
+    if not fm or not fm.group(1):
+        return None
+    filename = fm.group(1).decode("utf-8", "replace")
+    # 2) o que já veio depois do \r\n\r\n é início do conteúdo do arquivo
+    pending = buf[sep + 4:]
+    written = 0
+
+    def _flush(data):
+        nonlocal written
+        if not data:
+            return
+        written += len(data)
+        if written > max_bytes:
+            raise RuntimeError("arquivo grande demais (máx. 300 MB)")
+        out_fh.write(data)
+
+    # procura o boundary de fechamento no conteúdo já bufferizado
+    idx = pending.find(boundary)
+    if idx != -1:
+        _flush(pending[:idx])
+        return filename
+    _flush(pending)
+    # 3) continua lendo em blocos até achar o fim do arquivo (boundary)
+    #    usa uma janela para não perder o boundary que cruza a borda entre blocos
+    window = b""
+    while remaining > 0:
+        data = rfile.read(min(chunk, remaining))
+        if not data:
+            break
+        remaining -= len(data)
+        scan = window + data
+        idx = scan.find(boundary)
+        if idx != -1:
+            _flush(scan[:idx])
+            return filename
+        # mantém os últimos bytes (menor que o boundary) para o próximo scan
+        keep = len(boundary) - 1
+        _flush(scan[:-keep] if keep > 0 else scan)
+        window = scan[-keep:] if keep > 0 else b""
+    return filename
+
+
 # ---------------------------------------------------------------- handlers
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -554,6 +624,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
@@ -830,29 +902,43 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "name": name, "size": size})
 
     def api_backup_upload(self):
-        """Recebe um .zip de backup enviado do computador do usuário."""
+        """Recebe um .zip de backup enviado do computador (streaming em blocos)."""
         ctype = self.headers.get("Content-Type", "")
-        files = parse_multipart(self._body(), ctype)
-        if not files:
-            return self._error("nenhum arquivo recebido")
-        raw_name, content = files[0]
-        name = Path(raw_name).name
-        if not name.lower().endswith(".zip"):
-            return self._error("só é permitido enviar arquivos .zip")
-        if len(content) > MAX_UPLOAD:
-            return self._error("arquivo grande demais (máx. 300 MB)")
-        # renomeia para o padrão de backup do painel (mantém a validação _safe_name)
+        boundary = re.search(r'boundary="?([^";]+)"?', ctype)
+        if not boundary:
+            return self._error("requisição sem arquivo (boundary ausente)")
+        boundary = b"--" + boundary.group(1).encode()
+        # NOTE: o Content-Length inclui o multipart todo (cabeçalhos + boundary),
+        # então não vale usá-lo para limitar o tamanho do arquivo. O limite é
+        # aplicado sobre os bytes realmente escritos, dentro do streaming.
         stamp = time.strftime("%Y%m%d-%H%M%S")
         new_name = f"backup-{stamp}-upload.zip"
         dest = BACKUP_DIR / new_name
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(content)
-        # garante que é um zip válido
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            with open(dest, "wb") as fh:
+                name = _stream_multipart_to_file(
+                    self.rfile, length, boundary, fh, max_bytes=MAX_UPLOAD)
+        except RuntimeError as e:
+            dest.unlink(missing_ok=True)
+            self.close_connection = True
+            return self._error(str(e))
+        except Exception:
+            dest.unlink(missing_ok=True)
+            # marca a conexão para fechar: garante que uma nova requisição
+            # (retry do usuário) nunca leia dados órfãos desta
+            self.close_connection = True
+            raise
+        if not name or not name.lower().endswith(".zip"):
+            dest.unlink(missing_ok=True)
+            return self._error("só é permitido enviar arquivos .zip")
+        # garante que é um zip válido (não corrompido/truncado)
         if not zipfile.is_zipfile(dest):
             dest.unlink(missing_ok=True)
             return self._error("o arquivo enviado não é um .zip válido")
         prune_backups()
-        return self._json({"ok": True, "name": new_name, "size": len(content)})
+        return self._json({"ok": True, "name": new_name, "size": dest.stat().st_size})
 
     def api_backup_restore(self, query):
         name = (query.get("name") or [""])[0]

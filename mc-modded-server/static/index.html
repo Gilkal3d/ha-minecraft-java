@@ -243,6 +243,13 @@
         <button onclick="backupUpload()">⬆ Restaurar do PC</button>
         <span class="muted">Envie um <code>.zip</code> que você baixou antes (botão ⬇ Baixar) para restaurá-lo.</span>
       </div>
+      <div id="bkProg" class="hidden" style="margin-bottom:12px">
+        <div class="row" style="justify-content:space-between">
+          <span class="muted">Enviando backup…</span>
+          <span class="muted" id="bkProgPct">0%</span>
+        </div>
+        <div class="progress" style="margin-top:6px"><div id="bkProgFill" style="width:0%"></div></div>
+      </div>
       <table>
         <thead><tr><th>Arquivo</th><th>Data</th><th>Tamanho</th><th style="width:240px"></th></tr></thead>
         <tbody id="bkBody"></tbody>
@@ -911,22 +918,50 @@ async function backupCreate() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function backupUpload() {
+function backupUpload() {
   const f = $('bkFile').files[0];
   if (!f) return toast('Selecione um .zip de backup', true);
   if (serverRunning) return toast('Pare o servidor antes de restaurar.', true);
+  if (f.size > 300 * 1024 * 1024) return toast('Arquivo grande demais (máx. 300 MB)', true);
   if (!confirm(`Restaurar "${f.name}" do seu computador?\n\nUm backup de segurança do mundo atual é criado antes.`)) return;
   const fd = new FormData();
   fd.append('file', f, f.name);
-  toast('Enviando backup…');
-  try {
-    const up = await api('api/backups/upload', { method: 'POST', body: fd });
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', 'api/backups/upload');
+  const bar = $('bkProg'), fill = $('bkProgFill'), pct = $('bkProgPct');
+  bar.classList.remove('hidden');
+  fill.style.width = '0%'; pct.textContent = '0%';
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      const p = Math.round(e.loaded / e.total * 100);
+      fill.style.width = p + '%';
+      pct.textContent = p + '%';
+    }
+  };
+  xhr.onload = () => {
+    bar.classList.add('hidden');
+    let up = {};
+    try { up = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status !== 200 || !up.ok) {
+      return toast(up.error || ('HTTP ' + xhr.status), true);
+    }
     $('bkFile').value = '';
-    const d = await api(`api/backups/restore?name=${encodeURIComponent(up.name)}`, { method: 'POST' });
+    restoreUploaded(up.name);
+  };
+  xhr.onerror = () => {
+    bar.classList.add('hidden');
+    toast('Falha no envio do arquivo.', true);
+  };
+  xhr.send(fd);
+}
+
+async function restoreUploaded(name) {
+  try {
+    const d = await api(`api/backups/restore?name=${encodeURIComponent(name)}`, { method: 'POST' });
     toast(d.message || 'Backup restaurado.');
     loadBackups();
     loadStatus();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(e.message, true); loadBackups(); }
 }
 
 async function backupRestore(name, running) {
