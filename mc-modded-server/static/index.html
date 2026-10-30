@@ -959,41 +959,58 @@ async function backupCreate() {
   } catch (e) { toast(e.message, true); }
 }
 
-function backupUpload() {
+async function backupUpload() {
   const f = $('bkFile').files[0];
   if (!f) return toast('Selecione um .zip de backup', true);
   if (serverRunning) return toast('Pare o servidor antes de restaurar.', true);
   if (f.size > bkMaxUpload) return toast(`Arquivo grande demais (máx. ${fmtSize(bkMaxUpload)})`, true);
   if (!confirm(`Restaurar "${f.name}" do seu computador?\n\nUm backup de segurança do mundo atual é criado antes.`)) return;
-  const fd = new FormData();
-  fd.append('file', f, f.name);
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', 'api/backups/upload');
+  // Envio em blocos: o ingress do HA corta requisições acima de 16 MB (HTTP 413),
+  // então dividimos o arquivo em pedaços de 8 MB que passam direto.
+  const CHUNK = 8 * 1024 * 1024;
+  const uid = (crypto.randomUUID ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
   const bar = $('bkProg'), fill = $('bkProgFill'), pct = $('bkProgPct');
   bar.classList.remove('hidden');
   fill.style.width = '0%'; pct.textContent = '0%';
-  xhr.upload.onprogress = e => {
-    if (e.lengthComputable) {
-      const p = Math.round(e.loaded / e.total * 100);
-      fill.style.width = p + '%';
-      pct.textContent = p + '%';
+  const setPct = p => { fill.style.width = p + '%'; pct.textContent = p + '%'; };
+  const fail = msg => { bar.classList.add('hidden'); toast(msg, true); };
+  let sent = 0;
+  try {
+    for (let off = 0; off < f.size; off += CHUNK) {
+      const blob = f.slice(off, Math.min(off + CHUNK, f.size));
+      let lastErr = 'falha de rede';
+      let ok = false;
+      for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+        try {
+          const res = await fetch(
+            `api/backups/upload?chunk=${uid}&offset=${off}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+          if (res.ok) { ok = true; break; }
+          const err = await res.json().catch(() => ({}));
+          lastErr = err.error || ('HTTP ' + res.status);
+          // 4xx (exceto 429) é erro definitivo: adianta nada reenviar o bloco
+          if (res.status < 500 && res.status !== 429) throw { fatal: true };
+        } catch (e2) {
+          if (e2 && e2.fatal) throw new Error(lastErr);
+          // erro de rede: tenta o mesmo bloco de novo
+        }
+        if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
+        else throw new Error(lastErr);
+      }
+      sent += blob.size;
+      setPct(Math.round(sent / f.size * 100));
     }
-  };
-  xhr.onload = () => {
+    const up = await api(
+      `api/backups/upload?final=${uid}&name=${encodeURIComponent(f.name)}`,
+      { method: 'POST' });
     bar.classList.add('hidden');
-    let up = {};
-    try { up = JSON.parse(xhr.responseText); } catch {}
-    if (xhr.status !== 200 || !up.ok) {
-      return toast(up.error || ('HTTP ' + xhr.status), true);
-    }
     $('bkFile').value = '';
     restoreUploaded(up.name);
-  };
-  xhr.onerror = () => {
-    bar.classList.add('hidden');
-    toast('Falha no envio do arquivo.', true);
-  };
-  xhr.send(fd);
+  } catch (e) {
+    fail('Falha no envio: ' + e.message);
+    loadBackups();
+  }
 }
 
 async function restoreUploaded(name) {

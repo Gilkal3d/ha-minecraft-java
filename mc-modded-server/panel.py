@@ -227,6 +227,30 @@ def _safe_name(name):
     return bool(re.fullmatch(r"backup-[0-9]{8}-[0-9]{6}-[a-z]+\.zip", name or ""))
 
 
+# ------------------------------------------------------- upload em blocos (PC)
+# O ingress do Supervisor do Home Assistant rejeita corpos maiores que 16 MB
+# com 413 (issue home-assistant/supervisor#2950). Por isso o painel envia o
+# .zip em blocos de 8 MB: cada POST acrescenta bytes em um arquivo .part e o
+# último finaliza (valida e renomeia para backup-*.zip).
+INGRESS_CHUNK = 8 * 1024 * 1024
+UPLOAD_LOCK = threading.Lock()
+_UPLOAD_ID_RE = re.compile(r"[a-z0-9-]{8,64}")
+
+
+def _upload_part(upload_id):
+    return BACKUP_DIR / f".upload-{upload_id}.part"
+
+
+def _cleanup_parts(max_age=86400):
+    """Apaga .part órfãos de envios interrompidos (mais de 24h)."""
+    try:
+        for p in BACKUP_DIR.glob(".upload-*.part"):
+            if time.time() - p.stat().st_mtime > max_age:
+                p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------- restauração em segundo plano
 def _restore_set(status, message=""):
     write_json_file(RESTORE_STATE, {"status": status, "message": message,
@@ -821,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/backups/create":
                 return self.api_backup_create()
             if path == "/api/backups/upload":
-                return self.api_backup_upload()
+                return self.api_backup_upload(query)
             if path == "/api/backups/restore":
                 return self.api_backup_restore(query)
             if path == "/api/backups/delete":
@@ -958,9 +982,103 @@ class Handler(BaseHTTPRequestHandler):
             f"💾 Backup manual criado: {name} ({size // 1048576} MB).")).start()
         self._json({"ok": True, "name": name, "size": size})
 
-    def api_backup_upload(self):
-        """Recebe um .zip de backup enviado do computador (streaming em blocos)."""
+    def api_backup_upload(self, query):
+        """Recebe um .zip de backup enviado do computador.
+
+        Dois caminhos:
+        - multipart completo (acesso direto pela porta, sem ingress);
+        - em blocos (padrão do painel, atravessa o limite de 16 MB do ingress):
+          cada POST envia um pedaço com ?chunk=<id>&offset=<n> e o último
+          chama ?final=<id>&name=<arquivo.zip>.
+        """
         ctype = self.headers.get("Content-Type", "")
+        chunk = (query.get("chunk") or [""])[0]
+        final = (query.get("final") or [""])[0]
+        if chunk:
+            return self._upload_chunk(chunk, query)
+        if final:
+            return self._upload_final(final, query)
+        return self._upload_multipart(ctype)
+
+    def _upload_chunk(self, upload_id, query):
+        """Acrescenta um bloco de bytes no arquivo parcial do envio."""
+        if not _UPLOAD_ID_RE.fullmatch(upload_id):
+            self.close_connection = True
+            return self._error("id de upload inválido")
+        try:
+            offset = int((query.get("offset") or ["0"])[0])
+        except ValueError:
+            self.close_connection = True
+            return self._error("offset inválido")
+        if offset < 0:
+            self.close_connection = True
+            return self._error("offset inválido")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return self._error("bloco vazio")
+        if length > INGRESS_CHUNK * 2:
+            self.close_connection = True
+            return self._error("bloco grande demais", 413)
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        _cleanup_parts()
+        part = _upload_part(upload_id)
+        remaining = length
+        with UPLOAD_LOCK:
+            cur = part.stat().st_size if part.exists() else 0
+            if offset > cur:
+                self.close_connection = True
+                return self._error(
+                    f"offset adiante (servidor já tem {cur} bytes) — reenvie a partir dele")
+            if cur - offset + length > MAX_UPLOAD:
+                self.close_connection = True
+                return self._error(
+                    f"arquivo grande demais (máx. {MAX_UPLOAD // (1048576)} MB)")
+            try:
+                # offset <= cur: reescreve do offset e corta o resto — assim um
+                # bloco reenviado após falha nunca deixa o zip com sobra
+                with open(part, "r+b" if cur else "wb") as fh:
+                    fh.seek(offset)
+                    while remaining:
+                        buf = self.rfile.read(min(65536, remaining))
+                        if not buf:
+                            break
+                        fh.write(buf)
+                        remaining -= len(buf)
+                    fh.truncate()
+            except Exception:
+                self.close_connection = True
+                part.unlink(missing_ok=True)
+                raise
+        if remaining:
+            # conexão caiu no meio do bloco: o truncate acima já cortou no ponto
+            # exato — mantém os blocos anteriores para o retry do mesmo bloco
+            self.close_connection = True
+            return self._error("conexão interrompida no meio do bloco")
+        return self._json({"ok": True, "received": offset + length})
+
+    def _upload_final(self, upload_id, query):
+        """Valida o .part completo e promove a backup-*.zip."""
+        if not _UPLOAD_ID_RE.fullmatch(upload_id):
+            return self._error("id de upload inválido")
+        name = Path((query.get("name") or [""])[0]).name
+        if not name.lower().endswith(".zip"):
+            return self._error("só é permitido enviar arquivos .zip")
+        part = _upload_part(upload_id)
+        if not part.exists() or part.stat().st_size == 0:
+            return self._error("nenhum dado recebido para este envio")
+        if not zipfile.is_zipfile(part):
+            part.unlink(missing_ok=True)
+            return self._error("o .zip recebido está incompleto ou corrompido")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        new_name = f"backup-{stamp}-upload.zip"
+        with UPLOAD_LOCK:
+            part.replace(BACKUP_DIR / new_name)
+        prune_backups()
+        return self._json({"ok": True, "name": new_name,
+                           "size": (BACKUP_DIR / new_name).stat().st_size})
+
+    def _upload_multipart(self, ctype):
+        """Envio completo de uma vez (multipart) — para acesso direto à porta."""
         boundary = re.search(r'boundary="?([^";]+)"?', ctype)
         if not boundary:
             return self._error("requisição sem arquivo (boundary ausente)")
