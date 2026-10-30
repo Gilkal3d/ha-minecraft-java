@@ -1,5 +1,5 @@
 name: MC Modded Server
-version: "1.2.8"
+version: "1.2.9"
 slug: mc_modded
 description: Servidor Minecraft Java com Fabric, NeoForge ou Forge + painel web (visão geral, console, jogadores, backups, arquivos, agendamentos, server.properties e mods)
 url: https://github.com/Gilkal3d/ha-minecraft-java

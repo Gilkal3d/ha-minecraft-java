@@ -900,6 +900,18 @@ class Handler(BaseHTTPRequestHandler):
                         if isinstance(vals, str):
                             vals = [v.strip() for v in vals.splitlines()]
                         clean[k] = [str(v).strip() for v in vals if str(v).strip()]
+                if "loader_version" in clean:
+                    # aceita colar "NeoForge 21.1.264" ou "21.1.264 ⭐":
+                    # extrai só os números; "latest"/"beta" passam direto
+                    lv = str(clean["loader_version"]).strip()
+                    if lv and lv.lower() not in ("latest", "beta"):
+                        m = re.search(r"\d+(?:\.\d+)*", lv)
+                        if not m:
+                            return self._error(
+                                "versão do carregador inválida — use só números "
+                                "(ex.: 21.1.264), 'latest', 'beta' ou deixe vazio")
+                        lv = m.group(0)
+                    clean["loader_version"] = lv
                 if not clean:
                     return self._error("nenhuma configuração enviada")
                 CUSTOM_FILE.write_text(json.dumps(clean, indent=2, ensure_ascii=False) + "\n",

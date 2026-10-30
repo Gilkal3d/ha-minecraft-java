@@ -48,8 +48,15 @@ apply_env() {
   export MEMORY="$(get '.memory')"
 
   # Versão fixa do carregador (vazio = recomendada/mais recente do itzg).
-  # Serve para casar com a versão instalada no client do jogador.
+  # Serve para casar com a versão instalada no client do jogador. Aceita
+  # colar "NeoForge 21.1.264": fica só a parte numérica; "latest"/"beta"
+  # são valores válidos do itzg e passam direto.
   LOADER_V="$(get '.loader_version')"
+  case "$LOADER_V" in
+    [Ll][Aa][Tt][Ee][Ss][Tt]) LOADER_V="latest" ;;
+    [Bb][Ee][Tt][Aa]) LOADER_V="beta" ;;
+    *) LOADER_V="$(printf '%s' "$LOADER_V" | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1)" ;;
+  esac
   if [ -n "$LOADER_V" ]; then
     case "$TYPE" in
       NEOFORGE) export NEOFORGE_VERSION="$LOADER_V" ;;

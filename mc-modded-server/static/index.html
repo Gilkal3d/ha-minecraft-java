@@ -330,9 +330,10 @@
           </div>
           <div class="fld">
             <label>Versão do carregador (loader)</label>
-            <p class="desc">Ex.: Fabric <code>0.16.9</code>, NeoForge <code>21.1.264</code>, Forge <code>52.0.16</code>.
-              Vazio = baixa a recomendada para a versão do jogo. Fixe a versão para casar com a do seu client
-              (evita "Ligação perdida" ao entrar). A versão instalada aparece na Visão geral.</p>
+            <p class="desc">Ex.: Fabric <code>0.16.9</code>, NeoForge <code>21.1.264</code>, Forge <code>52.0.16</code>
+              (só os números — se colar texto junto, o painel limpa sozinho). Vazio = baixa a recomendada para a
+              versão do jogo. Fixe a versão para casar com a do seu client (evita "Ligação perdida" ao entrar).
+              A versão instalada aparece na Visão geral.</p>
             <input type="text" id="s_loader_version" placeholder="recomendada automaticamente">
           </div>
           <div class="fld">
@@ -741,7 +742,7 @@ async function loadSettings() {
     $('s_eula').checked = s.eula === true;
     $('s_loader').value = s.loader || 'FABRIC';
     $('s_minecraft_version').value = s.minecraft_version || '';
-    $('s_loader_version').value = s.loader_version || '';
+    $('s_loader_version').value = cleanLoaderVersion(s.loader_version);
     $('s_memory').value = s.memory || '';
     $('s_aikar_flags').checked = s.aikar_flags !== false;
     $('s_motd').value = s.motd || '';
@@ -771,6 +772,14 @@ async function loadSettings() {
   } catch (e) { toast(e.message, true); }
 }
 
+function cleanLoaderVersion(v) {
+  v = (v || '').trim();
+  if (!v) return '';
+  if (/^(latest|beta)$/i.test(v)) return v.toLowerCase();
+  const m = v.match(/\d+(\.\d+)*/);
+  return m ? m[0] : '';
+}
+
 function collectSettings() {
   const list = id => $(id).value.split('\n').map(v => v.trim()).filter(Boolean);
   let maxPlayers = parseInt($('s_max_players').value, 10);
@@ -782,7 +791,7 @@ function collectSettings() {
       eula: $('s_eula').checked,
       loader: $('s_loader').value,
       minecraft_version: $('s_minecraft_version').value.trim(),
-      loader_version: $('s_loader_version').value.trim(),
+      loader_version: cleanLoaderVersion($('s_loader_version').value),
       memory: $('s_memory').value.trim(),
       aikar_flags: $('s_aikar_flags').checked,
       motd: $('s_motd').value.trim(),
