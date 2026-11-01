@@ -384,9 +384,17 @@ def _restore_worker(name):
                 if zf.testzip() is not None:
                     raise RuntimeError("o .zip enviado está corrompido")
                 infos = list(zf.infolist())
+                # zips criados no Windows usam '\' como separador. No Linux o
+                # '\' NÃO é separador de diretório: sem normalizar, viraria um
+                # arquivo único com o nome todo ("konoha\region\r.0.0.mca")
+                # solto na raiz do /data. Normaliza e valida cada caminho.
+                parts_by_info = {}
                 for info in infos:
-                    if info.filename.startswith("/") or ".." in info.filename.split("/"):
+                    arc = info.filename.replace("\\", "/")
+                    if arc.startswith("/") or ".." in arc.split("/"):
                         raise RuntimeError("backup inválido (caminho suspeito)")
+                    parts = [p for p in arc.split("/") if p not in ("", ".")]
+                    parts_by_info[info] = parts
                 # checa espaço em disco: zip + extração (aprox. 2x o tamanho)
                 free = shutil.disk_usage(str(DATA)).free
                 zsize = src.stat().st_size
@@ -394,12 +402,29 @@ def _restore_worker(name):
                     raise RuntimeError(
                         f"espaço insuficiente no disco "
                         f"(livre: {free // 1048576} MB, necessário: ~{zsize * 2 // 1048576} MB)")
+                # limpa o lixo de restores antigos (arquivos com '\' no nome
+                # que ficaram soltos na raiz do /data)
+                for p in DATA.iterdir():
+                    if p.is_file() and "\\" in p.name:
+                        p.unlink(missing_ok=True)
                 _restore_set("extracting", f"Restaurando {name}…")
-                zf.extractall(DATA)
+                tops = set()
+                for info, parts in parts_by_info.items():
+                    if not parts:
+                        continue
+                    tops.add(parts[0])
+                    target = DATA.joinpath(*parts)
+                    # pasta termina com '/' (Linux) ou '\' (zip do Windows)
+                    if info.is_dir() or info.filename.endswith(("/", "\\")):
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src_f, open(target, "wb") as out_f:
+                        shutil.copyfileobj(src_f, out_f)
                 # o zip veio do PC: os arquivos extraídos são do root; o
                 # servidor roda como 'mc' e precisa deles graváveis
                 _restore_set("extracting", "Ajustando permissões dos arquivos…")
-                for top in sorted({i.filename.split("/", 1)[0] for i in infos}):
+                for top in sorted(tops):
                     p = DATA / top
                     if p.is_dir():
                         as_mc_tree(p)
