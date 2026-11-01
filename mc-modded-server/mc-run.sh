@@ -135,16 +135,29 @@ nap() { sleep "$1" & wait $! 2>/dev/null; }
 # do itzg falha com "Permission denied" (ex.: /data/whitelist.json) e o servidor
 # entra em loop de reinício com código 1.
 fix_data_ownership() {
-  chown mc:mc /data 2>/dev/null || true
+  chown mc:mc /data 2>/dev/null || chown 1000:1000 /data 2>/dev/null || true
   local f d
   for f in whitelist.json ops.json banned-players.json banned-ips.json \
            usercache.json eula.txt server.properties; do
-    [ -e "/data/$f" ] && chown mc:mc "/data/$f" 2>/dev/null
+    if [ -e "/data/$f" ]; then
+      chown mc:mc "/data/$f" 2>/dev/null || chown 1000:1000 "/data/$f" 2>/dev/null || true
+    fi
   done
-  for d in "${LEVEL_NAME:-world}" logs cache crash-reports libraries versions \
+  # Mundo restaurado do PC vem com dono root: SEM chown -R o servidor 'mc'
+  # morre com "AccessDeniedException: ./<mundo>/session.lock". Recursivo só
+  # no mundo (os demais diretórios ficam rasos para não lentificar o start).
+  d="${LEVEL_NAME:-world}"
+  if [ -d "/data/$d" ]; then
+    chown -R mc:mc "/data/$d" 2>/dev/null || chown -R 1000:1000 "/data/$d" 2>/dev/null || true
+  fi
+  for d in logs cache crash-reports libraries versions \
            assets config defaultconfigs mods neoform runs; do
-    [ -d "/data/$d" ] && chown mc:mc "/data/$d" 2>/dev/null
+    if [ -d "/data/$d" ]; then
+      chown mc:mc "/data/$d" 2>/dev/null || chown 1000:1000 "/data/$d" 2>/dev/null || true
+    fi
   done
+  # diagnóstico visível no Log do add-on
+  echo "[addon] Permissões: mundo '/data/${LEVEL_NAME:-world}' uid=$(stat -c '%u' "/data/${LEVEL_NAME:-world}" 2>/dev/null || echo '?') session.lock uid=$(stat -c '%u' "/data/${LEVEL_NAME:-world}/session.lock" 2>/dev/null || echo 'ausente')"
 }
 
 # --- Loop do servidor ---------------------------------------------------------

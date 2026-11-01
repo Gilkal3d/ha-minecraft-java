@@ -285,11 +285,56 @@ def _fs_name(name):
 # init do itzg falha com "Permission denied" (ex.: /data/whitelist.json) e o
 # servidor entra em loop de reinício.
 def _mc_ids():
+    """(uid, gid) de destino das cópias para o servidor.
+
+    Ordem: usuário 'mc' do passwd → uid real do processo java (quando rodando)
+    → 1000 (padrão do itzg). Assim nunca depende de uma única fonte.
+    """
     try:
         u = pwd.getpwnam("mc")
         return u.pw_uid, u.pw_gid
     except Exception:
-        return None
+        pass
+    uid = _java_uid()
+    if uid is not None:
+        return uid, uid
+    return 1000, 1000
+
+
+def _java_uid():
+    """Uid real do processo java do servidor (None se não estiver rodando)."""
+    for pid in _java_pids():
+        try:
+            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("Uid:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return None
+
+
+def _world_perm_diag():
+    """Diagnóstico de dono/modo do mundo — para entender AccessDeniedException."""
+    level = (options().get("level_name") or "world").strip() or "world"
+
+    def _st(p):
+        try:
+            s = os.stat(p)
+            return {"uid": s.st_uid, "gid": s.st_gid,
+                    "mode": oct(s.st_mode & 0o777)}
+        except OSError as e:
+            return {"erro": str(e)}
+
+    try:
+        u = pwd.getpwnam("mc")
+        mc = {"uid": u.pw_uid, "gid": u.pw_gid}
+    except Exception:
+        mc = None
+    return {"level": level, "mc": mc, "java_uid": _java_uid(),
+            "ids": list(_mc_ids()),
+            "dir": _st(DATA / level),
+            "lock": _st(DATA / level / "session.lock")}
 
 
 def as_mc(path):
@@ -427,13 +472,26 @@ def _restore_worker(name):
                 for top in sorted(tops):
                     p = DATA / top
                     if p.is_dir():
-                        as_mc_tree(p)
+                        as_mc(p)  # a pasta raiz também (senão o 'mc' não
+                        as_mc_tree(p)  # consegue criar session.lock dentro)
                     elif p.exists():
                         as_mc(p)
+                # confirma que o session.lock ficou gravável para o servidor
+                lock = DATA / ((options().get("level_name") or "world").strip()
+                               or "world") / "session.lock"
+                ids = _mc_ids()
+                lock_info = ""
+                try:
+                    s = os.stat(lock)
+                    lock_info = f" | session.lock uid={s.st_uid} modo={oct(s.st_mode & 0o777)}"
+                    if (s.st_uid, s.st_gid) != tuple(ids):
+                        lock_info += f" (esperado uid={ids[0]})"
+                except OSError:
+                    lock_info = " | session.lock ausente"
         except RuntimeError as e:
             _restore_set("error", str(e))
             return
-        _restore_set("done", f"Backup restaurado: {name}")
+        _restore_set("done", f"Backup restaurado: {name}{lock_info}")
     except Exception as e:  # noqa: BLE001
         _restore_set("error", f"falha inesperada: {e}")
 
@@ -1059,6 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
             "ram_mb": round(ram_mb, 1),
             "uptime_s": int(uptime_s),
             "startup": {"percent": pct, "phase": phase},
+            "world_perm": _world_perm_diag(),
         })
 
     # -------- jogadores --------
