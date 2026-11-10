@@ -14,14 +14,15 @@ RCON, backups, mods, integração com o Home Assistant e permissões.
 
 **Narrado em português (Brasil)**, com a narração sincronizada cena a cena.
 
-<video controls preload="metadata" width="100%" poster="">
-  <source src="docs/video/MC-Modded-Server-Explicacao.mp4" type="video/mp4">
-  Seu navegador não reproduz vídeo.
-  <a href="docs/video/MC-Modded-Server-Explicacao.mp4">Baixar o vídeo (MP4, 50 MB)</a>.
-</video>
+[![MC Modded Server — vídeo explicativo](docs/video/capa.jpg)](https://github.com/Gilkal3d/ha-minecraft-java/releases/download/v1.2.11/MC-Modded-Server-Explicacao.mp4)
 
-👉 [Assistir ou baixar o MP4](docs/video/MC-Modded-Server-Explicacao.mp4) ·
+**[▶ Baixar o vídeo (MP4, 45 MB)](https://github.com/Gilkal3d/ha-minecraft-java/releases/download/v1.2.11/MC-Modded-Server-Explicacao.mp4)** ·
+[Releases v1.2.11](https://github.com/Gilkal3d/ha-minecraft-java/releases/tag/v1.2.11) ·
 como regerar: [`docs/video/README.md`](docs/video/README.md)
+
+> O GitHub não reproduz MP4 embutido no README, então a capa acima é um link
+> para o arquivo na Release. O MP4 também fica versionado em
+> [`docs/video/`](docs/video/) caso você prefira baixar direto do repositório.
 
 ### MC Modded Server
 
