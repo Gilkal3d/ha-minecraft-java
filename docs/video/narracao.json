@@ -1,0 +1,79 @@
+{
+  "lang": "pt-BR",
+  "voice": "pt_BR-faber-medium",
+  "sample_rate": 22050,
+  "length_scale": 0.92,
+  "lead_in": 0.8,
+  "gap": 0.45,
+  "cenas": [
+    { "id": "capa",        "inicio": 0,   "fim": 14 },
+    { "id": "arquitetura", "inicio": 14,  "fim": 40 },
+    { "id": "boot",        "inicio": 40,  "fim": 70 },
+    { "id": "config",      "inicio": 70,  "fim": 94 },
+    { "id": "abas",        "inicio": 94,  "fim": 120 },
+    { "id": "console",     "inicio": 120, "fim": 142 },
+    { "id": "backups",     "inicio": 142, "fim": 170 },
+    { "id": "mods",        "inicio": 170, "fim": 190 },
+    { "id": "ha",          "inicio": 190, "fim": 214 },
+    { "id": "perm",        "inicio": 214, "fim": 236 },
+    { "id": "usar",        "inicio": 236, "fim": 258 },
+    { "id": "fim",         "inicio": 258, "fim": 270 }
+  ],
+  "segmentos": [
+    { "cena": "capa", "texto": "MC Modded Server: um servidor de Minecraft Java com mods, rodando como add-on do Home Assistant." },
+    { "cena": "capa", "texto": "Ele aceita Fabric, NeoForge, Forge, Paper, Purpur e até o Vanilla." },
+
+    { "cena": "arquitetura", "texto": "O jogador conecta na porta 25565 e joga normalmente." },
+    { "cena": "arquitetura", "texto": "O painel conversa com o servidor pelo RCON, na porta 25575: envia comandos, lê o log e controla o mundo." },
+    { "cena": "arquitetura", "texto": "Ele é publicado pelo Ingress do Home Assistant, com autenticação. Você abre pelo ícone, sem abrir portas." },
+    { "cena": "arquitetura", "texto": "Tudo roda num único container, sobre a imagem oficial do servidor Minecraft." },
+
+    { "cena": "boot", "texto": "O Supervisor constrói a imagem Docker sobre a base oficial do servidor Minecraft." },
+    { "cena": "boot", "texto": "O script assume o processo principal e repassa os sinais, para o container encerrar limpo." },
+    { "cena": "boot", "texto": "A configuração vira variáveis de ambiente. O Java instala o carregador, baixa os mods e gera o mundo." },
+    { "cena": "boot", "texto": "O healthcheck aponta para o painel, não para o jogo: o add-on vira iniciado em dez segundos." },
+    { "cena": "boot", "texto": "Se o painel travar, o watchdog reinicia." },
+
+    { "cena": "config", "texto": "A configuração vive em duas camadas: o formulário do Home Assistant grava os padrões no options.json." },
+    { "cena": "config", "texto": "A aba Configurações do painel grava no custom.json, com cada opção explicada em português. Ele tem prioridade." },
+    { "cena": "config", "texto": "O script transforma tudo em variáveis de ambiente e relê as opções a cada início. Salvar já vale para o próximo start." },
+
+    { "cena": "abas", "texto": "O painel tem oito abas. Visão geral: status, memória e o progresso do primeiro start." },
+    { "cena": "abas", "texto": "Console: log ao vivo e envio de comandos. Jogadores: quem entrou, quem saiu, e ações como banir." },
+    { "cena": "abas", "texto": "Backups cria e restaura zips do mundo. Arquivos gerencia o diretório de dados." },
+    { "cena": "abas", "texto": "Configurações é o formulário em português. E ainda tem o server.properties e os mods." },
+
+    { "cena": "console", "texto": "O console mostra o log do servidor ao vivo, com filtro e download." },
+    { "cena": "console", "texto": "O comando viaja pelo RCON até o servidor, que responde com a saída." },
+    { "cena": "console", "texto": "Há atalhos e histórico, para repetir com a seta para cima." },
+    { "cena": "console", "texto": "É pelo RCON que o Parar envia o stop, salvando o mundo antes de encerrar." },
+
+    { "cena": "backups", "texto": "O painel empacota mundo, configurações e mods num zip." },
+    { "cena": "backups", "texto": "Os zips ficam na pasta de backups; os antigos são apagados." },
+    { "cena": "backups", "texto": "O backup nativo do HA não inclui essa pasta: baixe o zip para o PC." },
+    { "cena": "backups", "texto": "Para restaurar do PC, o painel contorna o limite do Ingress, enviando em blocos de oito megabytes." },
+    { "cena": "backups", "texto": "A restauração roda em segundo plano e devolve as permissões." },
+
+    { "cena": "mods", "texto": "Na aba de mods você instala pelo Modrinth, usando o slug. O painel escolhe a versão compatível e baixa as dependências." },
+    { "cena": "mods", "texto": "Também dá para enviar o jar do seu computador, ativar, desativar e excluir." },
+    { "cena": "mods", "texto": "Depois, reinicie. O cliente precisa do mesmo carregador, versão e mods." },
+
+    { "cena": "ha", "texto": "O add-on publica três sensores: status do servidor, jogadores online e memória." },
+    { "cena": "ha", "texto": "Ligando as notificações, você avisa quando alguém entra, sai, quando o servidor cai e quando o backup termina." },
+    { "cena": "ha", "texto": "Os agendamentos automatizam o restart diário, de forma graciosa, e o backup diário." },
+    { "cena": "ha", "texto": "E com esses sensores você monta automações normais do Home Assistant." },
+
+    { "cena": "perm", "texto": "O painel roda como root; o servidor, com o usuário mc." },
+    { "cena": "perm", "texto": "Tudo que o painel escreve precisa voltar para o usuário do servidor." },
+    { "cena": "perm", "texto": "Essa briga já causou reinício em loop. Cada versão corrigiu um caso." },
+    { "cena": "perm", "texto": "A correção vale a cada início, e o log mostra o dono dos arquivos." },
+
+    { "cena": "usar", "texto": "Para usar: adicione o repositório, instale, aceite a EULA e escolha o carregador e a versão." },
+    { "cena": "usar", "texto": "Depois, inicie e abra o painel pelo ícone na barra lateral." },
+    { "cena": "usar", "texto": "Dicas: NeoForge e Forge pedem quatro gigabytes; em máquina fraca, prefira Fabric." },
+    { "cena": "usar", "texto": "E nunca exponha a porta 25565 na internet." },
+
+    { "cena": "fim", "texto": "Resumindo: um add-on, um painel completo em português e integração nativa com o Home Assistant." },
+    { "cena": "fim", "texto": "Adicione o repositório e instale. O endereço está na tela." }
+  ]
+}

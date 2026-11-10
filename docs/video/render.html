@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>MC Modded Server — Video explicativo</title>
+<style>
+  html,body { margin:0; padding:0; background:#000; overflow:hidden; }
+  /* o canvas é desenhado em 1920x1080; o CSS só ajusta a exibição na tela
+     (a gravação usa o bitmap nativo, então a qualidade não muda) */
+  canvas { display:block; width:100vw; height:auto; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/* =========================================================================
+   MC Modded Server — gerador de vídeo explicativo (canvas 2D)
+   Renderiza a timeline completa quadro a quadro e grava via MediaRecorder.
+   ========================================================================= */
+
+const W = 1920, H = 1080;
+const FPS = 30;
+
+const cv = document.getElementById('c');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const prevC = document.createElement('canvas'); prevC.width = W; prevC.height = H;
+const pctx = prevC.getContext('2d');
+
+/* ----------------------------------------------------------------- paleta */
+const C = {
+  bg0: '#060a12', bg1: '#0c1524', bg2: '#101c30',
+  text: '#eaf1ff', dim: '#9db0cf', dim2: '#6d81a3',
+  line: 'rgba(140,175,225,0.20)',
+  card: 'rgba(255,255,255,0.045)',
+  card2: 'rgba(255,255,255,0.075)',
+  green: '#57c75b', lime: '#a8e05f', blue: '#4a9eff',
+  amber: '#ffb340', red: '#ff5f56', purple: '#b06bff', cyan: '#41d0d4',
+};
+const F = '"Segoe UI", "Inter", system-ui, -apple-system, sans-serif';
+const M = '"Cascadia Mono", "Consolas", "SF Mono", monospace';
+
+/* ------------------------------------------------------------- utilitários */
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => { t = clamp(t); return t * t * (3 - 2 * t); };
+const easeOut = t => { t = clamp(t); return 1 - Math.pow(1 - t, 3); };
+const easeInOut = t => { t = clamp(t); return t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; };
+// progresso de 0..1 dentro de [delay, delay+dur]
+const win = (t, delay, dur) => easeOut((t - delay) / dur);
+
+function rr(c, x, y, w, h, r) {
+  r = Math.min(r, w/2, h/2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function box(c, x, y, w, h, o = {}) {
+  const r = o.r === undefined ? 18 : o.r;
+  rr(c, x, y, w, h, r);
+  if (o.fill) { c.fillStyle = o.fill; c.fill(); }
+  if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = o.lw || 2; c.stroke(); }
+  if (o.glow) { c.save(); c.shadowColor = o.glow; c.shadowBlur = o.glowSize || 24; rr(c, x, y, w, h, r); c.strokeStyle = o.stroke || o.glow; c.lineWidth = o.lw || 2; c.stroke(); c.restore(); }
+}
+
+function txt(c, s, x, y, o = {}) {
+  c.save();
+  c.font = `${o.weight || 500} ${o.size || 24}px ${o.mono ? M : F}`;
+  c.fillStyle = o.color || C.text;
+  c.textAlign = o.align || 'left';
+  c.textBaseline = o.baseline || 'alphabetic';
+  if (o.alpha !== undefined) c.globalAlpha = o.alpha;
+  if (o.letter) c.letterSpacing = o.letter;
+  if (o.shadow) { c.shadowColor = o.shadow; c.shadowBlur = o.shadowBlur || 18; }
+  c.fillText(s, x, y);
+  c.restore();
+}
+
+function wrap(c, s, maxW, o = {}) {
+  c.save();
+  c.font = `${o.weight || 500} ${o.size || 24}px ${o.mono ? M : F}`;
+  const words = String(s).split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const test = cur ? cur + ' ' + w : w;
+    if (c.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; }
+    else cur = test;
+  }
+  if (cur) lines.push(cur);
+  c.restore();
+  return lines;
+}
+
+function para(c, s, x, y, maxW, o = {}) {
+  const lh = o.lh || (o.size || 24) * 1.42;
+  const lines = wrap(c, s, maxW, o);
+  lines.forEach((ln, i) => txt(c, ln, x, y + i * lh, { ...o, baseline: 'top' }));
+  return lines.length * lh;
+}
+
+function chip(c, label, x, y, o = {}) {
+  c.save();
+  c.font = `600 ${o.size || 20}px ${o.mono ? M : F}`;
+  const w = c.measureText(label).width + (o.padX || 30);
+  const h = o.h || 42;
+  box(c, x, y, w, h, { r: h/2, fill: o.fill || 'rgba(255,255,255,0.05)', stroke: o.stroke || C.line, lw: 1.5 });
+  txt(c, label, x + w/2, y + h/2, { size: o.size || 20, weight: 600, align: 'center', baseline: 'middle', color: o.color || C.dim, mono: o.mono });
+  c.restore();
+  return w;
+}
+
+function chipRow(c, labels, x, y, o = {}) {
+  const gap = o.gap || 12;
+  c.save();
+  c.font = `600 ${o.size || 20}px ${o.mono ? M : F}`;
+  let total = 0;
+  labels.forEach((l, i) => { total += c.measureText(l).width + (o.padX || 30) + (i ? gap : 0); });
+  c.restore();
+  let cx = o.center ? x - total / 2 : x;
+  for (const l of labels) {
+    const w = chip(c, l, cx, y, o);
+    cx += w + gap;
+  }
+  return total;
+}
+
+function arrow(c, x1, y1, x2, y2, o = {}) {
+  const color = o.color || C.blue;
+  const lw = o.lw || 3;
+  const head = o.head || 14;
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  c.save();
+  c.strokeStyle = color; c.fillStyle = color; c.lineWidth = lw; c.lineCap = 'round';
+  if (o.dash) {
+    c.setLineDash([12, 10]);
+    c.lineDashOffset = -(o.dashT || 0) * 40;
+  }
+  c.beginPath();
+  c.moveTo(x1, y1);
+  c.lineTo(x2 - Math.cos(ang) * head * 0.6, y2 - Math.sin(ang) * head * 0.6);
+  c.stroke();
+  c.setLineDash([]);
+  c.beginPath();
+  c.moveTo(x2, y2);
+  c.lineTo(x2 - Math.cos(ang - 0.42) * head, y2 - Math.sin(ang - 0.42) * head);
+  c.lineTo(x2 - Math.cos(ang + 0.42) * head, y2 - Math.sin(ang + 0.42) * head);
+  c.closePath();
+  c.fill();
+  c.restore();
+}
+
+/* cubo isométrico (logo) */
+function cube(c, cx, cy, s, o = {}) {
+  const top = o.top || '#8ee06a';
+  const left = o.left || '#2f7d36';
+  const right = o.right || '#4fb04f';
+  const w = s * 0.86;          // meia largura
+  const hh = s * 0.5;          // meia altura do losango do topo
+  const vh = s * 0.5;          // altura das faces laterais
+  c.save();
+  c.lineJoin = 'round';
+  // face esquerda
+  c.beginPath();
+  c.moveTo(cx - w, cy - hh * 0.5);
+  c.lineTo(cx, cy + hh * 0.5);
+  c.lineTo(cx, cy + hh * 0.5 + vh);
+  c.lineTo(cx - w, cy + vh - hh * 0.5);
+  c.closePath();
+  c.fillStyle = left; c.fill();
+  // face direita
+  c.beginPath();
+  c.moveTo(cx + w, cy - hh * 0.5);
+  c.lineTo(cx, cy + hh * 0.5);
+  c.lineTo(cx, cy + hh * 0.5 + vh);
+  c.lineTo(cx + w, cy + vh - hh * 0.5);
+  c.closePath();
+  c.fillStyle = right; c.fill();
+  // face de cima
+  c.beginPath();
+  c.moveTo(cx, cy - hh);
+  c.lineTo(cx + w, cy - hh * 0.5);
+  c.lineTo(cx, cy + hh * 0.5);
+  c.lineTo(cx - w, cy - hh * 0.5);
+  c.closePath();
+  c.fillStyle = top; c.fill();
+  c.restore();
+}
+
+/* --------------------------------------------------------------- cenários */
+const scenes = [];
+const S = (id, dur, chapter, title, draw) => scenes.push({ id, dur, chapter, title, draw });
+
+/* ============================ 1. CAPA ==================================== */
+S('capa', 14, 'Introdução', 'Capa', (c, t) => {
+  // brilho de fundo em movimento
+  const g = c.createRadialGradient(W/2 + Math.sin(t*0.4)*220, H*0.42, 60, W/2, H*0.42, 950);
+  g.addColorStop(0, 'rgba(60,160,90,0.28)');
+  g.addColorStop(0.45, 'rgba(30,80,140,0.13)');
+  g.addColorStop(1, 'rgba(6,10,18,0)');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+
+  const p = win(t, 0.2, 1.0);
+  c.save();
+  c.globalAlpha = p;
+  c.translate(0, (1 - p) * 30);
+  cube(c, W/2, 300, 150, {});
+  c.restore();
+
+  const p2 = win(t, 0.5, 1.0);
+  c.save(); c.globalAlpha = p2; c.translate(0, (1-p2)*26);
+  txt(c, 'MC Modded Server', W/2, 500, { size: 104, weight: 800, align: 'center', color: C.text, letter: '-1px' });
+  c.restore();
+
+  const p3 = win(t, 0.9, 1.0);
+  c.save(); c.globalAlpha = p3;
+  para(c, 'Servidor Minecraft Java moddado rodando como add-on do Home Assistant',
+    W/2, 560, 1300, { size: 34, align: 'center', color: C.dim, weight: 400 });
+  c.restore();
+
+  const p4 = win(t, 1.4, 1.2);
+  c.save(); c.globalAlpha = p4;
+  const labels = ['Fabric', 'NeoForge', 'Forge', 'Paper', 'Purpur', 'Vanilla'];
+  let total = 0;
+  c.font = `600 22px ${F}`;
+  labels.forEach(l => total += c.measureText(l).width + 46 + 14);
+  let cx = W/2 - total/2;
+  labels.forEach((l, i) => {
+    const w = chip(c, l, cx, 660, { size: 22, h: 46, color: C.lime, stroke: 'rgba(168,224,95,0.45)', fill: 'rgba(168,224,95,0.08)' });
+    cx += w + 14;
+  });
+  c.restore();
+
+  const p5 = win(t, 2.0, 1.2);
+  c.save(); c.globalAlpha = p5;
+  txt(c, 'Painel web via Ingress  ·  Console ao vivo  ·  Backups  ·  Mods do Modrinth  ·  Sensores no HA',
+    W/2, 790, { size: 25, align: 'center', color: C.dim2, weight: 500 });
+  c.restore();
+
+  // barra de progresso de "loading" animada
+  const lp = clamp((t - 2.4) / 6);
+  c.save();
+  c.globalAlpha = win(t, 2.4, 0.6);
+  const bw = 640, bx = W/2 - bw/2;
+  box(c, bx, 850, bw, 10, { r: 5, fill: 'rgba(255,255,255,0.08)' });
+  box(c, bx, 850, bw * ease(lp), 10, { r: 5, fill: C.green });
+  txt(c, 'Iniciando servidor… ' + Math.round(lp*100) + '%', W/2, 900, { size: 22, align: 'center', color: C.dim, weight: 500, mono: true });
+  c.restore();
+});
+
+/* ====================== 2. ARQUITETURA ================================= */
+S('arquitetura', 26, 'Fundamentos', 'Arquitetura do sistema', (c, t) => {
+  const cards = [
+    { x: 90,  w: 370, title: 'Jogador', sub: 'Cliente Minecraft Java\ncom os mesmos mods do servidor', color: C.amber, icon: 'player' },
+    { x: 545, w: 420, title: 'Servidor Minecraft', sub: 'Java 21 · loader · mundo\nmods · jogadores', color: C.green, icon: 'server' },
+    { x: 1050, w: 380, title: 'Painel Web', sub: 'HTTP :8099\nconsole · backup · arquivos', color: C.blue, icon: 'panel' },
+    { x: 1515, w: 320, title: 'Home Assistant', sub: 'Ingress · Supervisor\nsensores · notificações', color: C.purple, icon: 'ha' },
+  ];
+  const y = 250, h = 300;
+  const p = win(t, 0.3, 0.9);
+  cards.forEach((cd, i) => {
+    const cp = win(t, 0.3 + i * 0.18, 0.8);
+    c.save();
+    c.globalAlpha = cp;
+    c.translate(0, (1 - cp) * 24);
+    box(c, cd.x, y, cd.w, h, { r: 24, fill: C.card, stroke: 'rgba(140,175,225,0.28)', lw: 2 });
+    box(c, cd.x, y, cd.w, 6, { r: 3, fill: cd.color });
+    // ícone
+    const icx = cd.x + cd.w / 2, icy = y + 92;
+    c.save();
+    c.strokeStyle = cd.color; c.fillStyle = cd.color; c.lineWidth = 3.5; c.lineJoin = 'round';
+    if (cd.icon === 'player') {
+      c.beginPath(); c.arc(icx, icy - 22, 22, 0, Math.PI*2); c.stroke();
+      c.beginPath(); c.arc(icx, icy + 34, 34, Math.PI, 0); c.stroke();
+    } else if (cd.icon === 'server') {
+      c.strokeRect(icx - 38, icy - 40, 76, 34);
+      c.strokeRect(icx - 38, icy + 4, 76, 34);
+      c.beginPath(); c.arc(icx - 22, icy - 23, 4, 0, Math.PI*2); c.fill();
+      c.beginPath(); c.arc(icx - 22, icy + 21, 4, 0, Math.PI*2); c.fill();
+    } else if (cd.icon === 'panel') {
+      c.strokeRect(icx - 42, icy - 32, 84, 64);
+      c.beginPath(); c.moveTo(icx - 42, icy - 12); c.lineTo(icx + 42, icy - 12); c.stroke();
+      c.beginPath(); c.moveTo(icx - 22, icy + 32); c.lineTo(icx + 22, icy + 32); c.stroke();
+    } else {
+      c.beginPath(); c.moveTo(icx, icy - 38); c.lineTo(icx + 36, icy - 19); c.lineTo(icx + 36, icy + 19); c.lineTo(icx, icy + 38); c.lineTo(icx - 36, icy + 19); c.lineTo(icx - 36, icy - 19); c.closePath(); c.stroke();
+      c.beginPath(); c.moveTo(icx, icy - 38); c.lineTo(icx, icy); c.lineTo(icx + 36, icy - 19); c.moveTo(icx, icy); c.lineTo(icx - 36, icy - 19); c.stroke();
+    }
+    c.restore();
+    txt(c, cd.title, cd.x + cd.w/2, y + 176, { size: 30, weight: 700, align: 'center' });
+    para(c, cd.sub.replace('\n', ' '), cd.x + cd.w/2, y + 200, cd.w - 44, { size: 20, align: 'center', color: C.dim, weight: 400 });
+    c.restore();
+  });
+
+  // setas entre os cartões
+  const arrows = [
+    { x1: 460, x2: 545, label: '25565/tcp', c: C.amber, d: 1.6 },
+    { x1: 965, x2: 1050, label: 'RCON 25575', c: C.green, d: 2.0 },
+    { x1: 1430, x2: 1515, label: 'Ingress', c: C.blue, d: 2.4 },
+  ];
+  arrows.forEach(a => {
+    const ap = win(t, a.d, 0.7);
+    if (ap <= 0) return;
+    c.save(); c.globalAlpha = ap;
+    arrow(c, a.x1 + 6, y + h/2, a.x2 - 6, y + h/2, { color: a.c, lw: 3.5, head: 15, dash: true, dashT: t });
+    txt(c, a.label, (a.x1 + a.x2)/2, y - 22, { size: 19, weight: 700, align: 'center', color: a.c, mono: true });
+    c.restore();
+  });
+
+  // container do add-on
+  const cp2 = win(t, 3.0, 1.0);
+  c.save(); c.globalAlpha = cp2;
+  const bx = 90, by = 640, bw = 1745, bh = 190;
+  box(c, bx, by, bw, bh, { r: 22, fill: 'rgba(74,158,255,0.06)', stroke: 'rgba(74,158,255,0.35)', lw: 2 });
+  txt(c, 'CONTAINER DO ADD-ON (uma única imagem Docker)', bx + 28, by + 40, { size: 19, weight: 700, color: C.blue, letter: '1px' });
+  const inner = [
+    ['mc-run.sh', 'PID 1 · tini · loop de start/stop'],
+    ['panel.py', 'API JSON + threads de HA'],
+    ['itzg/minecraft-server', 'java21 · instala loader e mods'],
+    ['/data', 'mundo · mods · backups · custom.json'],
+  ];
+  const iw = 395, gap = 25;
+  inner.forEach((it, i) => {
+    const ix = bx + 28 + i * (iw + gap);
+    box(c, ix, by + 62, iw, 100, { r: 14, fill: 'rgba(255,255,255,0.05)', stroke: 'rgba(140,175,225,0.22)', lw: 1.5 });
+    txt(c, it[0], ix + 20, by + 96, { size: 22, weight: 700, color: C.text, mono: true });
+    txt(c, it[1], ix + 20, by + 128, { size: 17, weight: 400, color: C.dim2 });
+  });
+  c.restore();
+
+  // integração HA
+  const ip = win(t, 4.2, 1.0);
+  c.save(); c.globalAlpha = ip;
+  txt(c, 'O painel publica sensores no Home Assistant e avisa entradas, saídas, quedas e backups',
+    W/2, 880, { size: 25, align: 'center', color: C.dim, weight: 500 });
+  chipRow(c, ['sensor.mc_server_status', 'sensor.mc_players_online', 'sensor.mc_ram'],
+    W/2, 920, { size: 20, h: 44, color: C.purple, stroke: 'rgba(176,107,255,0.45)', fill: 'rgba(176,107,255,0.08)', mono: true, center: true });
+  c.restore();
+});
+
+/* ========================= 3. BOOT ====================================== */
+S('boot', 30, 'Fundamentos', 'Como o add-on sobe', (c, t) => {
+  const steps = [
+    { t: 'Supervisor constrói a imagem', d: 'Dockerfile sobre itzg/minecraft-server:java21 + python3, jq, procps' },
+    { t: 'mc-run.sh assume o PID 1', d: 'tini repassa sinais; o painel roda em loop que se auto-restarta' },
+    { t: 'Configuração é relida', d: 'options.json + custom.json viram variáveis de ambiente (EULA, TYPE, VERSION…)' },
+    { t: 'Permissões são corrigidas', d: 'chown do /data e do mundo para o usuário mc (uid 1000)' },
+    { t: 'O servidor é iniciado', d: '/image/scripts/start instala o loader, baixa os mods e gera o mundo' },
+  ];
+  const lx = 130, ly = 250, stepH = 130;
+  // linha vertical
+  const lineP = win(t, 0.4, 3.4);
+  c.save();
+  box(c, lx + 30, ly + 20, 4, (steps.length - 1) * stepH + 40, { r: 2, fill: 'rgba(140,175,225,0.18)' });
+  box(c, lx + 30, ly + 20, 4, ((steps.length - 1) * stepH + 40) * lineP, { r: 2, fill: C.green });
+  c.restore();
+
+  steps.forEach((s, i) => {
+    const sp = win(t, 0.5 + i * 0.55, 0.7);
+    const cy = ly + 40 + i * stepH;
+    c.save();
+    c.globalAlpha = sp;
+    c.translate((1 - sp) * -24, 0);
+    // bolinha
+    c.beginPath(); c.arc(lx + 32, cy, 22, 0, Math.PI * 2);
+    c.fillStyle = '#0d1a16'; c.fill();
+    c.strokeStyle = C.green; c.lineWidth = 3; c.stroke();
+    txt(c, String(i + 1), lx + 32, cy + 1, { size: 20, weight: 800, align: 'center', baseline: 'middle', color: C.lime });
+    txt(c, s.t, lx + 80, cy - 8, { size: 28, weight: 700 });
+    txt(c, s.d, lx + 80, cy + 26, { size: 20, weight: 400, color: C.dim });
+    c.restore();
+  });
+
+  // terminal
+  const tp = win(t, 2.2, 0.9);
+  c.save(); c.globalAlpha = tp;
+  const tx = 1030, ty = 215, tw = 800, th = 640;
+  box(c, tx, ty, tw, th, { r: 20, fill: 'rgba(4,8,14,0.72)', stroke: 'rgba(140,175,225,0.25)', lw: 2 });
+  box(c, tx, ty, tw, 52, { r: 20, fill: 'rgba(255,255,255,0.05)' });
+  ['#ff5f56', '#ffb340', '#57c75b'].forEach((cc, i) => {
+    c.beginPath(); c.arc(tx + 32 + i * 26, ty + 26, 8, 0, Math.PI * 2); c.fillStyle = cc; c.fill();
+  });
+  txt(c, 'Log do add-on (Home Assistant → Log)', tx + 130, ty + 33, { size: 19, weight: 600, color: C.dim });
+  c.restore();
+
+  const lines = [
+    ['[addon] MC Modded Server iniciando...', C.green, 3.0],
+    ['[addon] Loader=NEOFORGE Versão=1.21.4 Memória=4G', C.text, 4.0],
+    ['[addon] Permissões: mundo \'/data/world\' uid=1000', C.dim, 5.0],
+    ['[addon] Starting minecraft server...', C.text, 6.0],
+    ['[INFO] Loading Minecraft 1.21.4 with Fabric Loader', C.dim2, 7.2],
+    ['[INFO] Loading 87 mods: create, lithium, fabric-api…', C.dim2, 8.4],
+    ['[INFO] Preparing spawn area: 42%', C.dim2, 9.6],
+    ['[INFO] Done (28.481s)! For help, type "help"', C.green, 10.8],
+    ['[INFO] Server started on port 25565', C.green, 11.8],
+  ];
+  lines.forEach((ln, i) => {
+    const lp = win(t, ln[2], 0.5);
+    if (lp <= 0) return;
+    c.save(); c.globalAlpha = lp;
+    txt(c, ln[0], tx + 28, ty + 92 + i * 38, { size: 19, weight: 500, color: ln[1], mono: true });
+    c.restore();
+  });
+
+  const qp = win(t, 12.8, 1.0);
+  c.save(); c.globalAlpha = qp;
+  box(c, 130, 900, 1700, 92, { r: 16, fill: 'rgba(255,179,64,0.08)', stroke: 'rgba(255,179,64,0.35)', lw: 1.5 });
+  txt(c, 'Healthcheck do painel (não do jogo): o Supervisor marca o add-on como "iniciado" em ~10 s, mesmo com o Minecraft ainda carregando.',
+    160, 935, { size: 22, weight: 500, color: C.amber, baseline: 'middle' });
+  txt(c, 'Watchdog: se o painel travar, o Supervisor reinicia o add-on.',
+    160, 970, { size: 22, weight: 500, color: C.dim, baseline: 'middle' });
+  c.restore();
+});
+
+/* ================= 4. CONFIGURAÇÃO EM DUAS CAMADAS ===================== */
+S('config', 24, 'Fundamentos', 'Onde ficam as configurações', (c, t) => {
+  const p = win(t, 0.3, 0.8);
+  c.save(); c.globalAlpha = p;
+  // card 1
+  box(c, 120, 230, 640, 250, { r: 22, fill: C.card, stroke: 'rgba(74,158,255,0.35)', lw: 2 });
+  txt(c, '/data/options.json', 160, 285, { size: 30, weight: 700, color: C.blue, mono: true });
+  para(c, 'Formulário nativo do Home Assistant (Configurações do add-on). São os PADRÕES de tudo.',
+    160, 310, 560, { size: 21, color: C.dim, weight: 400 });
+  chipRow(c, ['eula', 'loader', 'minecraft_version', 'memory'],
+    160, 400, { size: 17, h: 36, gap: 8, color: C.dim, stroke: 'rgba(140,175,225,0.25)' });
+  c.restore();
+
+  const p2 = win(t, 0.8, 0.8);
+  c.save(); c.globalAlpha = p2;
+  box(c, 1160, 230, 640, 250, { r: 22, fill: 'rgba(87,199,91,0.07)', stroke: 'rgba(87,199,91,0.40)', lw: 2 });
+  txt(c, '/data/custom.json', 1200, 285, { size: 30, weight: 700, color: C.green, mono: true });
+  para(c, 'Aba "Configurações" do painel web, em português, com cada opção explicada. TEM PRIORIDADE.',
+    1200, 310, 560, { size: 21, color: C.dim, weight: 400 });
+  chipRow(c, ['loader', 'memory', 'daily_restart', 'notify_service'],
+    1200, 400, { size: 17, h: 36, gap: 8, color: C.lime, stroke: 'rgba(168,224,95,0.35)' });
+  c.restore();
+
+  // seta de merge
+  const mp = win(t, 1.6, 0.8);
+  c.save(); c.globalAlpha = mp;
+  arrow(c, 790, 355, 1130, 355, { color: C.text, lw: 3.5, head: 16, dash: true, dashT: t });
+  txt(c, 'mescla', 960, 320, { size: 20, weight: 700, align: 'center', color: C.dim });
+  c.restore();
+
+  // resultado
+  const rp = win(t, 2.3, 0.9);
+  c.save(); c.globalAlpha = rp;
+  box(c, 420, 560, 1080, 150, { r: 22, fill: 'rgba(255,255,255,0.06)', stroke: 'rgba(255,255,255,0.25)', lw: 2, glow: 'rgba(140,175,225,0.35)' });
+  txt(c, 'Configuração efetiva', 460, 605, { size: 24, weight: 700, color: C.text });
+  txt(c, 'custom.json sobrescreve options.json  →  exportada como variáveis de ambiente',
+    460, 645, { size: 24, weight: 500, color: C.dim });
+  txt(c, 'Guardada no /data, sobrevive a atualizações do add-on e é relida a CADA start',
+    460, 685, { size: 20, weight: 400, color: C.dim2 });
+  c.restore();
+
+  // mapa de variáveis
+  const vp = win(t, 3.0, 1.0);
+  c.save(); c.globalAlpha = vp;
+  txt(c, 'Variáveis entregues à imagem itzg/minecraft-server', 120, 790, { size: 22, weight: 700, color: C.text });
+  const pairs = [
+    ['EULA', 'eula'], ['TYPE', 'loader'], ['VERSION', 'minecraft_version'], ['MEMORY', 'memory'],
+    ['WHITELIST', 'whitelist'], ['OPS', 'ops'], ['MODRINTH_PROJECTS', 'modrinth_projects'],
+    ['NEOFORGE_VERSION', 'loader_version'], ['USE_AIKAR_FLAGS', 'aikar_flags'], ['ENABLE_RCON / RCON_PASSWORD', 'rcon'],
+  ];
+  let x = 120, y = 820;
+  pairs.forEach((pr, i) => {
+    c.font = `700 17px ${M}`;
+    const w1 = c.measureText(pr[0]).width;
+    c.font = `500 16px ${M}`;
+    const w2 = c.measureText('← ' + pr[1]).width;
+    const w = w1 + w2 + 34;
+    if (x + w > 1810) { x = 120; y += 52; }
+    box(c, x, y, w, 42, { r: 10, fill: 'rgba(74,158,255,0.10)', stroke: 'rgba(74,158,255,0.28)', lw: 1.5 });
+    txt(c, pr[0], x + 14, y + 27, { size: 17, weight: 700, color: C.blue, mono: true, baseline: 'middle' });
+    txt(c, '← ' + pr[1], x + w - 14, y + 27, { size: 16, weight: 500, color: C.dim2, mono: true, align: 'right', baseline: 'middle' });
+    x += w + 14;
+  });
+  c.restore();
+
+  const np = win(t, 5.0, 0.9);
+  c.save(); c.globalAlpha = np;
+  txt(c, '"Restaurar padrões" no painel volta tudo para o formulário do Home Assistant',
+    W/2, 1010, { size: 21, align: 'center', color: C.dim2, weight: 500 });
+  c.restore();
+});
+
+/* ======================= 5. AS 8 ABAS ================================== */
+S('abas', 26, 'O painel web', 'O painel em 8 abas', (c, t) => {
+  const tabs = [
+    { n: 'Visão geral', i: '👁', d: 'Status, RAM, uptime, barra de progresso do 1º start e quem está online com avatar.', col: C.blue },
+    { n: 'Console', i: '>\_', d: 'Log ao vivo, comandos via RCON, filtro, histórico (seta ↑), atalhos e download do log.', col: C.green },
+    { n: 'Jogadores', i: '☺', d: 'Online e sessão da rodada, kick / ban / OP / whitelist e lista editável.', col: C.amber },
+    { n: 'Backups', i: '💾', d: 'Cria, restaura, baixa e apaga .zip do mundo; upload do PC em blocos de 8 MB.', col: C.purple },
+    { n: 'Arquivos', i: '🗂', d: 'Gerenciador do /data: navega, envia, baixa, renomeia, apaga e cria pastas.', col: C.cyan },
+    { n: 'Configurações', i: '⚙', d: 'Formulário em português, agendamentos e notificações. Salva e reinicia em 1 clique.', col: C.green },
+    { n: 'server.properties', i: '≡', d: 'Editor de texto completo do arquivo. Salva com o servidor parado.', col: C.dim },
+    { n: 'Mods', i: '🧩', d: 'Instala do Modrinth por slug (com dependências), envia .jar, ativa ou exclui.', col: C.lime },
+  ];
+  const cols = 4, cw = 415, ch = 290, gx = 28, gy = 30, x0 = 110, y0 = 215;
+  tabs.forEach((tb, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = x0 + col * (cw + gx), y = y0 + row * (ch + gy);
+    const p = win(t, 0.25 + i * 0.16, 0.6);
+    c.save();
+    c.globalAlpha = p;
+    c.translate(0, (1 - p) * 22);
+    box(c, x, y, cw, ch, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+    box(c, x + 26, y + 26, 58, 58, { r: 14, fill: 'rgba(255,255,255,0.06)', stroke: tb.col + '66', lw: 1.5 });
+    txt(c, tb.i, x + 55, y + 56, { size: 26, weight: 700, align: 'center', baseline: 'middle', color: tb.col, mono: true });
+    txt(c, tb.n, x + 26, y + 125, { size: 27, weight: 700, color: C.text });
+    para(c, tb.d, x + 26, y + 150, cw - 52, { size: 19, color: C.dim, weight: 400, lh: 27 });
+    c.restore();
+  });
+  const np = win(t, 4.2, 0.9);
+  c.save(); c.globalAlpha = np;
+  box(c, 110, 900, 1700, 84, { r: 16, fill: 'rgba(255,255,255,0.05)', stroke: 'rgba(140,175,225,0.22)', lw: 1.5 });
+  txt(c, 'Iniciar · Parar · Reiniciar no cabeçalho — o "parar" é gracioso (envia /stop pelo RCON) e o painel segura o servidor parado até você iniciar de novo.',
+    145, 943, { size: 22, weight: 500, color: C.dim, baseline: 'middle' });
+  c.restore();
+});
+
+/* ======================= 6. CONSOLE / RCON ============================ */
+S('console', 22, 'O painel web', 'Console ao vivo e RCON', (c, t) => {
+  // terminal
+  const tp = win(t, 0.2, 0.7);
+  c.save(); c.globalAlpha = tp;
+  const tx = 110, ty = 225, tw = 1030, th = 545;
+  box(c, tx, ty, tw, th, { r: 20, fill: 'rgba(4,8,14,0.78)', stroke: 'rgba(140,175,225,0.25)', lw: 2 });
+  box(c, tx, ty, tw, 52, { r: 20, fill: 'rgba(255,255,255,0.05)' });
+  ['#ff5f56','#ffb340','#57c75b'].forEach((cc,i)=>{c.beginPath();c.arc(tx+32+i*26, ty+26, 8,0,Math.PI*2);c.fillStyle=cc;c.fill();});
+  txt(c, 'Console — output do servidor', tx + 130, ty + 33, { size: 19, weight: 600, color: C.dim });
+  c.restore();
+
+  const out = [
+    ['[12:04:31] [Server thread/INFO]: Done (28.481s)! For help, type "help"', C.dim],
+    ['[12:07:14] [Server thread/INFO]: Gilkal3d joined the game', C.green],
+    ['[12:07:52] [Server thread/INFO]: Preparing spawn area: 12%', C.dim2],
+    ['[12:09:03] [Server thread/INFO]: Done (3.214s)! For help, type "help"', C.dim2],
+  ];
+  out.forEach((ln, i) => {
+    const p = win(t, 0.9 + i * 0.7, 0.5);
+    if (p <= 0) return;
+    c.save(); c.globalAlpha = p;
+    txt(c, ln[0], tx + 26, ty + 90 + i * 34, { size: 18, weight: 500, color: ln[1], mono: true });
+    c.restore();
+  });
+
+  // comando digitado
+  const cmdFull = 'say Servidor no ar!';
+  const typed = cmdFull.slice(0, Math.floor(clamp((t - 4.2) / 0.55) * cmdFull.length));
+  const cp = win(t, 4.0, 0.4);
+  c.save(); c.globalAlpha = cp;
+  box(c, tx + 26, ty + 245, tw - 52, 52, { r: 10, fill: 'rgba(255,255,255,0.06)', stroke: 'rgba(140,175,225,0.3)', lw: 1.5 });
+  txt(c, '>', tx + 44, ty + 278, { size: 22, weight: 700, color: C.green, mono: true, baseline: 'middle' });
+  txt(c, typed, tx + 74, ty + 278, { size: 22, weight: 500, color: C.text, mono: true, baseline: 'middle' });
+  if (t > 4.2 && t < 4.9) {
+    c.beginPath(); c.rect(tx + 74 + ctx.measureText(typed).width * 0, ty + 258, 11, 30); c.fillStyle = C.green; c.fill();
+  }
+  c.restore();
+
+  const rp = win(t, 5.0, 0.5);
+  c.save(); c.globalAlpha = rp;
+  txt(c, '[Server thread/INFO]: [Server] Servidor no ar!', tx + 74, ty + 325, { size: 18, weight: 500, color: C.amber, mono: true });
+  c.restore();
+
+  // botões rápidos
+  const bp = win(t, 5.8, 0.7);
+  c.save(); c.globalAlpha = bp;
+  txt(c, 'Comandos rápidos', tx + 26, ty + 400, { size: 19, weight: 700, color: C.dim });
+  let bx = tx + 26;
+  ['list','time set day','weather clear','save-all','gamerule doDaylightCycle false'].forEach(cmd => {
+    bx += chip(c, cmd, bx, ty + 418, { size: 17, h: 38, mono: true, color: C.green, stroke: 'rgba(87,199,91,0.30)', fill: 'rgba(87,199,91,0.07)' }) + 10;
+  });
+  const hp = win(t, 6.6, 0.6);
+  c.save(); c.globalAlpha = hp;
+  txt(c, 'Seta ↑ repete o último comando  ·  filtro de busca no log  ·  ⬇ baixa o latest.log',
+    tx + 26, ty + 495, { size: 18, weight: 500, color: C.dim2 });
+  c.restore();
+  c.restore();
+
+  // coluna direita
+  const rp2 = win(t, 1.2, 0.9);
+  c.save(); c.globalAlpha = rp2;
+  const items = [
+    ['RCON', 'Canal de controle do painel: o comando vira um pacote e volta com a resposta do servidor.', C.green],
+    ['Porta 25575', 'Ativa sempre, com senha gerada sozinha na primeira execução (guardada em /data/.rcon.json).', C.blue],
+    ['Log ao vivo', 'Tail de /data/logs/latest.log com as cores ANSI removidas, filtro de busca e rolagem automática.', C.dim],
+    ['Parada graciosa', 'O botão Parar envia /stop: o Minecraft salva o mundo e encerra limpo, sem SIGKILL.', C.amber],
+  ];
+  items.forEach((it, i) => {
+    const y = 240 + i * 160;
+    const p = win(t, 1.4 + i * 0.35, 0.6);
+    c.save(); c.globalAlpha = p; c.translate((1-p)*20, 0);
+    box(c, 1200, y, 620, 130, { r: 18, fill: C.card, stroke: 'rgba(140,175,225,0.20)', lw: 1.5 });
+    txt(c, it[0], 1230, y + 38, { size: 25, weight: 700, color: it[2] });
+    para(c, it[1], 1230, y + 52, 560, { size: 18, color: C.dim, weight: 400, lh: 25 });
+    c.restore();
+  });
+  c.restore();
+});
+
+/* ========================= 7. BACKUPS ================================== */
+S('backups', 28, 'O painel web', 'Backups do mundo', (c, t) => {
+  const steps = [
+    { t: 'Criar', d: 'save-all flush pelo RCON e um .zip com mundo, server.properties, whitelist, ops, config e mods.', col: C.green },
+    { t: 'Guardar', d: 'Os .zip ficam em /data/backups e os antigos são apagados conforme "manter" (padrão 7).', col: C.blue },
+    { t: 'Baixar', d: 'Botão ⬇ traz o .zip para o seu PC — eles não entram no backup nativo do Home Assistant.', col: C.amber },
+    { t: 'Restaurar', d: 'Sobe o .zip do PC em blocos de 8 MB e a restauração roda em segundo plano, com status ao vivo.', col: C.purple },
+    { t: 'Proteger', d: 'Valida o zip, checa espaço em disco, bloqueia caminho suspeito e devolve o mundo para o usuário mc.', col: C.red },
+  ];
+  const lx = 130, ly = 225, stepH = 132;
+  const lp = win(t, 0.3, 3.0);
+  c.save();
+  box(c, lx + 30, ly + 30, 4, (steps.length - 1) * stepH + 20, { r: 2, fill: 'rgba(140,175,225,0.18)' });
+  box(c, lx + 30, ly + 30, 4, ((steps.length - 1) * stepH + 20) * lp, { r: 2, fill: C.green });
+  c.restore();
+
+  steps.forEach((s, i) => {
+    const p = win(t, 0.4 + i * 0.5, 0.6);
+    const cy = ly + 50 + i * stepH;
+    c.save(); c.globalAlpha = p; c.translate((1-p)*-22, 0);
+    c.beginPath(); c.arc(lx + 32, cy, 22, 0, Math.PI*2);
+    c.fillStyle = '#0b1220'; c.fill(); c.strokeStyle = s.col; c.lineWidth = 3; c.stroke();
+    txt(c, String(i+1), lx + 32, cy + 1, { size: 19, weight: 800, align: 'center', baseline: 'middle', color: s.col });
+    txt(c, s.t, lx + 80, cy - 10, { size: 27, weight: 700, color: s.col });
+    para(c, s.d, lx + 80, cy + 8, 760, { size: 19, color: C.dim, weight: 400, lh: 26 });
+    c.restore();
+  });
+
+  // direita: detalhes
+  const rp = win(t, 2.6, 0.9);
+  c.save(); c.globalAlpha = rp;
+  const rx = 1050;
+  box(c, rx, 215, 780, 300, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+  txt(c, 'Upload em blocos', rx + 30, 265, { size: 26, weight: 700, color: C.text });
+  para(c, 'O Ingress do Home Assistant recusa arquivos acima de 16 MB. O painel contorna isso:',
+    rx + 30, 285, 700, { size: 19, color: C.dim, weight: 400, lh: 26 });
+  const barY = 380, barW = 700;
+  box(c, rx + 30, barY, barW, 26, { r: 13, fill: 'rgba(255,255,255,0.07)' });
+  const fillW = barW * clamp((t - 3.0) / 3.2);
+  box(c, rx + 30, barY, fillW, 26, { r: 13, fill: C.green });
+  for (let i = 0; i < 8; i++) {
+    const bx = rx + 30 + i * (barW / 8);
+    c.save(); c.globalAlpha = 0.25;
+    c.beginPath(); c.moveTo(bx, barY); c.lineTo(bx + barW/8 - 4, barY + 26); c.lineTo(bx + barW/8 - 4, barY); c.closePath();
+    c.fillStyle = '#000'; c.fill(); c.restore();
+  }
+  txt(c, 'bloco de 8 MB · retomada automática · até 2 GB', rx + 30, 432, { size: 19, weight: 500, color: C.dim2 });
+  txt(c, 'backup-20261110-143000-manual.zip', rx + 30, 472, { size: 19, weight: 600, color: C.cyan, mono: true });
+  c.restore();
+
+  // armadilhas
+  const tp2 = win(t, 5.0, 1.0);
+  c.save(); c.globalAlpha = tp2;
+  box(c, rx, 555, 780, 330, { r: 20, fill: 'rgba(255,95,86,0.06)', stroke: 'rgba(255,95,86,0.30)', lw: 2 });
+  txt(c, 'Armadilhas já tratadas no código', rx + 30, 605, { size: 25, weight: 700, color: C.red });
+  const traps = [
+    'Zip criado no Windows usa "\\" como separador → os caminhos são normalizados na restauração',
+    'Zip corrompido é detectado antes de tocar em qualquer arquivo do mundo',
+    'Falta de espaço em disco é checada (zip + extração ≈ 2× o tamanho)',
+    'Arquivos restaurados vêm como root → o chown para o usuário mc é aplicado',
+  ];
+  traps.forEach((tr, i) => {
+    const p = win(t, 5.3 + i * 0.3, 0.5);
+    c.save(); c.globalAlpha = p;
+    c.beginPath(); c.arc(rx + 38, 650 + i * 60 + 6, 6, 0, Math.PI*2); c.fillStyle = C.red; c.fill();
+    para(c, tr, rx + 58, 640 + i * 60, 690, { size: 18, color: C.dim, weight: 400, lh: 24 });
+    c.restore();
+  });
+  c.restore();
+
+  const ap = win(t, 6.2, 0.9);
+  c.save(); c.globalAlpha = ap;
+  box(c, 130, 880, 1700, 84, { r: 16, fill: 'rgba(87,199,91,0.08)', stroke: 'rgba(87,199,91,0.30)', lw: 1.5 });
+  txt(c, 'Agendamento diário: defina um horário (HH:MM) e o add-on cria o backup sozinho, avisa no HA e respeita quantos arquivos manter.',
+    165, 923, { size: 22, weight: 500, color: C.lime, baseline: 'middle' });
+  c.restore();
+});
+
+/* ========================== 8. MODS =================================== */
+S('mods', 20, 'O painel web', 'Mods: Modrinth e upload', (c, t) => {
+  // esquerda: fluxo modrinth
+  const p = win(t, 0.3, 0.8);
+  c.save(); c.globalAlpha = p;
+  txt(c, 'Instalar do Modrinth', 130, 250, { size: 30, weight: 700, color: C.lime });
+  txt(c, 'Informe o slug (a última parte da URL do projeto).', 130, 282, { size: 20, color: C.dim, weight: 400 });
+  c.restore();
+
+  const flow = [
+    ['slug', 'modrinth.com/mods/lithium  →  "lithium"'],
+    ['consulta', 'API do Modrinth filtrada pela sua versão do MC e pelo seu loader'],
+    ['escolha', 'a primeira versão compatível (arquivo principal) é baixada'],
+    ['deps', 'dependências obrigatórias entram junto (MODRINTH_DOWNLOAD_DEPENDENCIES=required)'],
+    ['instalado', 'o .jar cai em /data/mods e o servidor reinicia com ele'],
+  ];
+  flow.forEach((f, i) => {
+    const fp = win(t, 0.6 + i * 0.5, 0.6);
+    const y = 340 + i * 118;
+    c.save(); c.globalAlpha = fp; c.translate((1-fp)*-20, 0);
+    box(c, 130, y, 780, 92, { r: 16, fill: C.card, stroke: 'rgba(168,224,95,0.25)', lw: 1.5 });
+    txt(c, f[0], 158, y + 33, { size: 20, weight: 800, color: C.lime, mono: true });
+    txt(c, f[1], 158, y + 62, { size: 18, color: C.dim, weight: 400 });
+    if (i < flow.length - 1) {
+      arrow(c, 180, y + 94, 180, y + 114, { color: 'rgba(168,224,95,0.5)', lw: 2, head: 8 });
+    }
+    c.restore();
+  });
+
+  // direita
+  const p2 = win(t, 1.6, 0.8);
+  c.save(); c.globalAlpha = p2;
+  const rx = 990;
+  box(c, rx, 235, 840, 330, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+  txt(c, 'Gerenciador de mods', rx + 30, 285, { size: 27, weight: 700 });
+  const acts = [
+    ['Instalar do Modrinth', 'pelo slug, com dependências'],
+    ['Enviar .jar', 'do seu PC (mods do CurseForge, por exemplo)'],
+    ['Ativar / desativar', 'renomeia o .jar para .jar.disabled'],
+    ['Excluir', 'remove o arquivo do /data/mods'],
+  ];
+  acts.forEach((a, i) => {
+    const ap = win(t, 1.9 + i * 0.35, 0.5);
+    c.save(); c.globalAlpha = ap;
+    c.font = `700 21px ${F}`;
+    const lw = c.measureText('▸ ' + a[0]).width;
+    txt(c, '▸ ' + a[0], rx + 30, 335 + i * 54, { size: 21, weight: 700, color: C.text });
+    txt(c, a[1], rx + 30 + lw + 26, 335 + i * 54, { size: 19, color: C.dim, weight: 400 });
+    c.restore();
+  });
+  c.restore();
+
+  const p3 = win(t, 3.4, 0.8);
+  c.save(); c.globalAlpha = p3;
+  const rx2 = 990;
+  box(c, rx2, 600, 840, 290, { r: 20, fill: 'rgba(255,179,64,0.06)', stroke: 'rgba(255,179,64,0.30)', lw: 2 });
+  txt(c, 'Lembre-se', rx2 + 30, 650, { size: 27, weight: 700, color: C.amber });
+  const warns = [
+    'Depois de mexer nos mods, use Reiniciar no painel.',
+    'O cliente precisa ter o MESMO loader, a MESMA versão do Minecraft e os mesmos mods.',
+    'Você também pode soltar os .jar em mc_modded/mods/ pelo Files/Samba do Home Assistant.',
+    'A opção modrinth_projects baixa os slugs automaticamente a cada start.',
+  ];
+  warns.forEach((w, i) => {
+    const wp = win(t, 3.7 + i * 0.3, 0.5);
+    c.save(); c.globalAlpha = wp;
+    c.beginPath(); c.arc(rx2 + 38, 695 + i * 52 + 6, 6, 0, Math.PI*2); c.fillStyle = C.amber; c.fill();
+    para(c, w, rx2 + 58, 685 + i * 52, 740, { size: 18, color: C.dim, weight: 400, lh: 24 });
+    c.restore();
+  });
+  c.restore();
+});
+
+/* ================== 9. INTEGRAÇÃO COM O HOME ASSISTANT ================= */
+S('ha', 24, 'Integração', 'Sensores, avisos e agendas', (c, t) => {
+  const sensors = [
+    ['sensor.mc_server_status', 'online / offline', 'loader · versão · uptime · RAM', C.green],
+    ['sensor.mc_players_online', '3', 'nomes dos jogadores · máximo', C.blue],
+    ['sensor.mc_ram', '1840', 'MB usados pelo processo Java', C.cyan],
+  ];
+  const p = win(t, 0.3, 0.8);
+  sensors.forEach((s, i) => {
+    const sp = win(t, 0.4 + i * 0.3, 0.7);
+    const x = 130 + i * 570;
+    c.save(); c.globalAlpha = sp; c.translate(0, (1-sp)*20);
+    box(c, x, 235, 530, 260, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+    txt(c, s[0], x + 28, 285, { size: 21, weight: 700, color: s[3], mono: true });
+    txt(c, s[1], x + 28, 365, { size: 56, weight: 800, color: C.text });
+    txt(c, s[2], x + 28, 410, { size: 19, color: C.dim, weight: 400 });
+    txt(c, 'Home Assistant', x + 28, 455, { size: 17, color: C.dim2, weight: 500 });
+    c.restore();
+  });
+
+  const p2 = win(t, 1.8, 0.9);
+  c.save(); c.globalAlpha = p2;
+  txt(c, 'Notificações', 130, 570, { size: 28, weight: 700 });
+  const nots = [
+    ['👤', 'Alguém entrou no servidor', C.green],
+    ['👋', 'Alguém saiu do servidor', C.amber],
+    ['⚠️', 'O servidor caiu — o add-on vai religar', C.red],
+    ['💾', 'Backup (manual ou automático) concluído', C.purple],
+  ];
+  nots.forEach((n, i) => {
+    const np = win(t, 2.1 + i * 0.35, 0.5);
+    c.save(); c.globalAlpha = np;
+    box(c, 130, 600 + i * 68, 840, 56, { r: 12, fill: 'rgba(255,255,255,0.045)', stroke: 'rgba(140,175,225,0.16)', lw: 1.5 });
+    txt(c, n[0], 155, 628 + i * 68, { size: 22, baseline: 'middle' });
+    txt(c, n[1], 205, 628 + i * 68, { size: 20, weight: 500, color: C.dim, baseline: 'middle' });
+    c.restore();
+  });
+  txt(c, 'Escolha o serviço (ex.: notify.mobile_app_celular) ou deixe vazio para a notificação persistente do HA.',
+    130, 880, { size: 18, color: C.dim2, weight: 400 });
+  c.restore();
+
+  // direita: agendamentos + automação
+  const p3 = win(t, 2.4, 0.9);
+  c.save(); c.globalAlpha = p3;
+  const rx = 1030;
+  txt(c, 'Agendamentos', rx, 570, { size: 28, weight: 700 });
+  const sch = [
+    ['Restart diário', 'HH:MM · parada graciosa via RCON e religamento automático'],
+    ['Backup diário', 'HH:MM · cria o .zip e respeita "manter" (padrão 7)'],
+  ];
+  sch.forEach((s, i) => {
+    const sp = win(t, 2.7 + i * 0.35, 0.5);
+    c.save(); c.globalAlpha = sp;
+    box(c, rx, 600 + i * 96, 800, 80, { r: 14, fill: 'rgba(255,255,255,0.045)', stroke: 'rgba(140,175,225,0.18)', lw: 1.5 });
+    txt(c, s[0], rx + 26, 630 + i * 96, { size: 22, weight: 700, color: C.text });
+    txt(c, s[1], rx + 26, 660 + i * 96, { size: 18, color: C.dim, weight: 400 });
+    c.restore();
+  });
+
+  const p4 = win(t, 3.6, 0.9);
+  c.save(); c.globalAlpha = p4;
+  box(c, rx, 790, 800, 215, { r: 16, fill: 'rgba(4,8,14,0.7)', stroke: 'rgba(140,175,225,0.25)', lw: 1.5 });
+  const code = [
+    'automation:',
+    '  - alias: "MC: jogador entrou"',
+    '    trigger:',
+    '      - platform: state',
+    '        entity_id: sensor.mc_players_online',
+    '        above: 0',
+    '    action:',
+    '      - service: notify.mobile_app_celular',
+  ];
+  code.forEach((l, i) => {
+    const cp = win(t, 3.8 + i * 0.12, 0.4);
+    c.save(); c.globalAlpha = cp;
+    txt(c, l, rx + 26, 822 + i * 23, { size: 16, weight: 500, color: l.trim().startsWith('#') ? C.dim2 : C.green, mono: true });
+    c.restore();
+  });
+  c.restore();
+
+  const p5 = win(t, 6.0, 0.9);
+  c.save(); c.globalAlpha = p5;
+  txt(c, 'O painel usa a API do próprio Home Assistant (SUPERVISOR_TOKEN): os sensores nascem sozinhos na primeira abertura do painel.',
+    W/2, 1020, { size: 20, align: 'center', color: C.dim2, weight: 500 });
+  c.restore();
+});
+
+/* ============== 10. PERMISSÕES E PROBLEMAS RESOLVIDOS ================= */
+S('perm', 22, 'Robustez', 'Permissões e problemas resolvidos', (c, t) => {
+  // diagrama root vs mc
+  const p = win(t, 0.3, 0.8);
+  c.save(); c.globalAlpha = p;
+  txt(c, 'O truque que faz o servidor sobreviver', 130, 240, { size: 30, weight: 700 });
+  const ax = 130, ay = 290;
+  box(c, ax, ay, 760, 180, { r: 18, fill: 'rgba(255,179,64,0.07)', stroke: 'rgba(255,179,64,0.35)', lw: 2 });
+  txt(c, 'Painel (panel.py)', ax + 28, ay + 48, { size: 25, weight: 700, color: C.amber });
+  para(c, 'Roda como root: precisa escrever /data, criar .zip, restaurar backups e enviar arquivos.',
+    ax + 28, ay + 62, 700, { size: 19, color: C.dim, weight: 400, lh: 26 });
+  box(c, ax, ay + 210, 760, 180, { r: 18, fill: 'rgba(87,199,91,0.07)', stroke: 'rgba(87,199,91,0.35)', lw: 2 });
+  txt(c, 'Servidor (java)', ax + 28, ay + 258, { size: 25, weight: 700, color: C.green });
+  para(c, 'Roda como "mc" (uid 1000): grava o mundo, o session.lock e os arquivos do jogo.',
+    ax + 28, ay + 272, 700, { size: 19, color: C.dim, weight: 400, lh: 26 });
+  // seta chown
+  arrow(c, ax + 380, ay + 186, ax + 380, ay + 206, { color: C.cyan, lw: 3, head: 10 });
+  txt(c, 'chown a cada start', ax + 400, ay + 196, { size: 16, weight: 600, color: C.cyan });
+  c.restore();
+
+  // timeline de correções
+  const p2 = win(t, 1.8, 0.9);
+  c.save(); c.globalAlpha = p2;
+  txt(c, 'Problemas reais encontrados e corrigidos', 1010, 240, { size: 30, weight: 700 });
+  const fixes = [
+    ['1.1.2', 'Healthcheck do painel: o add-on parava em "Iniciando" para sempre', C.blue],
+    ['1.2.7', 'Propriedade dos arquivos tocados pelo painel corrigida (whitelist, ops, eula…)', C.green],
+    ['1.2.9', 'Campo "versão do carregador" aceita "NeoForge 21.1.264" e extrai só os números', C.amber],
+    ['1.2.10', 'Zips do Windows (separador "\\") normalizados na restauração', C.purple],
+    ['1.2.11', 'chown -R no mundo a cada start: resolve o AccessDeniedException no session.lock', C.red],
+  ];
+  fixes.forEach((f, i) => {
+    const fp = win(t, 2.1 + i * 0.45, 0.55);
+    const y = 280 + i * 104;
+    c.save(); c.globalAlpha = fp; c.translate((1-fp)*22, 0);
+    box(c, 1010, y, 820, 84, { r: 14, fill: 'rgba(255,255,255,0.045)', stroke: 'rgba(140,175,225,0.18)', lw: 1.5 });
+    txt(c, f[0], 1030, y + 50, { size: 24, weight: 800, color: f[2], mono: true, baseline: 'middle' });
+    para(c, f[1], 1180, y + 22, 620, { size: 18, color: C.dim, weight: 400, lh: 24 });
+    c.restore();
+  });
+  c.restore();
+
+  const p3 = win(t, 5.0, 0.9);
+  c.save(); c.globalAlpha = p3;
+  box(c, 130, 880, 1700, 96, { r: 16, fill: 'rgba(255,95,86,0.07)', stroke: 'rgba(255,95,86,0.28)', lw: 1.5 });
+  txt(c, 'Diagnóstico: o Log mostra dono e modo do session.lock e a API devolve world_perm — dá para ver a permissão sem entrar no container.',
+    165, 928, { size: 21, weight: 500, color: C.dim, baseline: 'middle' });
+  c.restore();
+});
+
+/* ======================= 11. COMO USAR ================================= */
+S('usar', 22, 'Mão na massa', 'Como usar em 5 passos', (c, t) => {
+  const steps = [
+    ['Instale o repositório', 'HA → Configurações → Add-ons → Loja → ⋮ → Repositórios → cole a URL'],
+    ['Instale o add-on', 'MC Modded Server → Instalar'],
+    ['Aceite a EULA', 'Nas Configurações do add-on marque eula: true (exigência da Mojang)'],
+    ['Escolha loader e versão', 'FABRIC · NEOFORGE · FORGE · PAPER · PURPUR · VANILLA + versão do MC'],
+    ['Inicie e abra o painel', 'Clique em Iniciar e use o ícone do add-on na barra lateral do HA'],
+  ];
+  const p = win(t, 0.3, 0.8);
+  steps.forEach((s, i) => {
+    const sp = win(t, 0.4 + i * 0.45, 0.6);
+    const x = 130 + i * 340;
+    c.save(); c.globalAlpha = sp; c.translate(0, (1-sp)*24);
+    box(c, x, 235, 310, 330, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+    c.beginPath(); c.arc(x + 52, 290, 30, 0, Math.PI*2);
+    c.fillStyle = 'rgba(87,199,91,0.14)'; c.fill();
+    c.strokeStyle = C.green; c.lineWidth = 2.5; c.stroke();
+    txt(c, String(i+1), x + 52, 292, { size: 26, weight: 800, align: 'center', baseline: 'middle', color: C.lime });
+    txt(c, s[0], x + 26, 355, { size: 23, weight: 700, color: C.text });
+    para(c, s[1], x + 26, 375, 258, { size: 17, color: C.dim, weight: 400, lh: 24 });
+    if (i < steps.length - 1) {
+      arrow(c, x + 312, 290, x + 336, 290, { color: 'rgba(140,175,225,0.5)', lw: 2.5, head: 9 });
+    }
+    c.restore();
+  });
+
+  const p2 = win(t, 3.0, 0.9);
+  c.save(); c.globalAlpha = p2;
+  txt(c, 'Dicas', 130, 620, { size: 28, weight: 700, color: C.amber });
+  const tips = [
+    ['RAM', 'NeoForge e Forge pedem 4 GB livres; em hardware fraco prefira Fabric + Lithium/FerriteCore e view-distance 8.'],
+    ['Backups', 'Baixe os .zip para o PC de tempos em tempos — eles não entram no backup nativo do HA.'],
+    ['Atualizar', 'O HA só reconstrói a imagem quando a versão sobe ou em ⋮ → Rebuild. Nunca desinstale: apaga o /data.'],
+    ['Exposição', 'Nunca exponha a 25565 direto na internet com online-mode=false. Use proxy DuckDNS/Caddy ou Cloudflare Tunnel.'],
+  ];
+  tips.forEach((tp, i) => {
+    const fp = win(t, 3.3 + i * 0.35, 0.5);
+    const y = 660 + i * 88;
+    c.save(); c.globalAlpha = fp;
+    box(c, 130, y, 1700, 76, { r: 14, fill: 'rgba(255,255,255,0.04)', stroke: 'rgba(140,175,225,0.16)', lw: 1.5 });
+    txt(c, tp[0], 155, y + 38, { size: 21, weight: 700, color: C.amber, baseline: 'middle' });
+    txt(c, tp[1], 300, y + 38, { size: 19, weight: 400, color: C.dim, baseline: 'middle' });
+    c.restore();
+  });
+  c.restore();
+});
+
+/* ======================= 12. ENCERRAMENTO =============================== */
+S('fim', 12, 'Encerramento', 'Resumo', (c, t) => {
+  const p = win(t, 0.2, 1.0);
+  c.save(); c.globalAlpha = p;
+  const g = c.createRadialGradient(W/2, H*0.45, 60, W/2, H*0.45, 900);
+  g.addColorStop(0, 'rgba(60,160,90,0.25)');
+  g.addColorStop(1, 'rgba(6,10,18,0)');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  cube(c, W/2, 280, 120, {});
+  txt(c, 'Minecraft dentro do Home Assistant', W/2, 450, { size: 60, weight: 800, align: 'center' });
+  c.restore();
+
+  const p2 = win(t, 0.8, 1.0);
+  c.save(); c.globalAlpha = p2;
+  const items = [
+    ['Um add-on', 'Imagem Docker única sobre itzg/minecraft-server, com painel web próprio via Ingress.'],
+    ['Painel completo', 'Console, jogadores, backups, arquivos, server.properties e mods em português.'],
+    ['Integrado', 'Sensores, notificações e agendamentos nativos do Home Assistant.'],
+  ];
+  items.forEach((it, i) => {
+    const ip = win(t, 1.0 + i * 0.35, 0.6);
+    const x = 210 + i * 520;
+    c.save(); c.globalAlpha = ip;
+    box(c, x, 560, 470, 210, { r: 20, fill: C.card, stroke: 'rgba(140,175,225,0.22)', lw: 2 });
+    txt(c, it[0], x + 28, 612, { size: 26, weight: 700, color: C.lime });
+    para(c, it[1], x + 28, 630, 414, { size: 19, color: C.dim, weight: 400, lh: 26 });
+    c.restore();
+  });
+  c.restore();
+
+  const p3 = win(t, 2.4, 1.0);
+  c.save(); c.globalAlpha = p3;
+  txt(c, 'github.com/Gilkal3d/ha-minecraft-java', W/2, 860, { size: 28, weight: 600, align: 'center', color: C.dim, mono: true });
+  txt(c, 'Adicione o repositório em Configurações → Add-ons → Repositórios e instale o MC Modded Server',
+    W/2, 905, { size: 20, align: 'center', color: C.dim2, weight: 400 });
+  c.restore();
+});
+
+/* ------------------------------------------------------------- timeline */
+let TOTAL = 0;
+const starts = [];
+scenes.forEach(s => { starts.push(TOTAL); TOTAL += s.dur; });
+
+function bg(c, t) {
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, C.bg1); g.addColorStop(0.55, C.bg0); g.addColorStop(1, C.bg2);
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  // grade sutil
+  c.save();
+  c.globalAlpha = 0.05;
+  c.strokeStyle = '#9db0cf'; c.lineWidth = 1;
+  const off = (t * 12) % 80;
+  for (let x = -80 + off; x < W + 80; x += 80) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); }
+  for (let y = -80 + off; y < H + 80; y += 80) { c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); }
+  c.restore();
+}
+
+function overlay(c, idx, t) {
+  // cabeçalho
+  c.save();
+  c.globalAlpha = 0.9;
+  cube(c, 62, 70, 34, {});
+  txt(c, 'MC Modded Server', 100, 80, { size: 25, weight: 800, color: C.text });
+  txt(c, 'add-on para Home Assistant', 100, 108, { size: 16, weight: 500, color: C.dim2 });
+  c.restore();
+
+  // capítulo à direita
+  const sc = scenes[idx];
+  c.save();
+  txt(c, sc.chapter, W - 80, 72, { size: 22, weight: 700, align: 'right', color: C.dim });
+  txt(c, sc.title, W - 80, 104, { size: 18, weight: 500, align: 'right', color: C.dim2 });
+  c.restore();
+
+  // divisória
+  c.save();
+  c.globalAlpha = 0.5;
+  c.fillStyle = 'rgba(140,175,225,0.18)';
+  c.fillRect(60, 138, W - 120, 1);
+  c.restore();
+
+  // barra de progresso
+  const bx = 60, by = H - 46, bw = W - 120;
+  c.save();
+  c.globalAlpha = 0.35;
+  c.fillStyle = 'rgba(255,255,255,0.10)';
+  c.fillRect(bx, by, bw, 6);
+  c.restore();
+  c.save();
+  c.fillStyle = C.green;
+  c.fillRect(bx, by, bw * clamp(t / TOTAL), 6);
+  c.restore();
+  // divisórias por cena
+  c.save();
+  c.globalAlpha = 0.55;
+  c.fillStyle = '#060a12';
+  starts.forEach(s => { if (s > 0) c.fillRect(bx + bw * (s / TOTAL) - 1, by - 2, 2, 10); });
+  c.restore();
+}
+
+function renderScene(idx, lt, target) {
+  const sc = scenes[idx];
+  bg(target, lt);
+  sc.draw(target, lt);
+}
+
+function render(t) {
+  let idx = 0;
+  while (idx < scenes.length - 1 && t >= starts[idx] + scenes[idx].dur) idx++;
+  const lt = t - starts[idx];
+  octx.setTransform(1,0,0,1,0,0);
+  octx.clearRect(0, 0, W, H);
+  renderScene(idx, lt, octx);
+
+  const TR = 0.75;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0, 0, W, H);
+  if (lt < TR && idx > 0) {
+    pctx.setTransform(1,0,0,1,0,0);
+    pctx.clearRect(0, 0, W, H);
+    renderScene(idx - 1, scenes[idx-1].dur, pctx);
+    ctx.drawImage(prevC, 0, 0);
+    ctx.globalAlpha = ease(lt / TR);
+    ctx.drawImage(off, 0, 0);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.drawImage(off, 0, 0);
+  }
+  overlay(ctx, idx, t);
+}
+
+/* -------------------------------------------------------- pré-visualização */
+function previewAt(t) { render(t); }
+window.__meta = { total: TOTAL, fps: FPS, scenes: scenes.map(s => ({ id: s.id, dur: s.dur, title: s.title, chapter: s.chapter })) };
+
+/* ------------------------------------------------------------- gravação */
+window.__recState = { status: 'idle' };
+
+const ch = new MessageChannel();
+function yieldTick() {
+  return new Promise(res => { ch.port1.onmessage = () => res(); ch.port2.postMessage(0); });
+}
+
+async function recordAll(onProgress) {
+  const stream = cv.captureStream(0);
+  const track = stream.getVideoTracks()[0];
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  const mime = types.find(t => MediaRecorder.isTypeSupported(t));
+  if (!mime) { window.__recState = { status: 'error', error: 'mime não suportado' }; return; }
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 9_000_000 });
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.start(2000);
+  const totalFrames = Math.round(TOTAL * FPS);
+  for (let i = 0; i < totalFrames; i++) {
+    render(i / FPS);
+    // força a rasterização imediata: sem isso o captureStream pode capturar
+    // um quadro antigo (o compositor ainda não aplicou os comandos)
+    ctx.getImageData(0, 0, 1, 1);
+    track.requestFrame();
+    if (i % 10 === 0) {
+      window.__recState = { status: 'recording', frame: i, totalFrames, pct: +(i/totalFrames*100).toFixed(1) };
+      await yieldTick();
+    } else {
+      await Promise.resolve();
+    }
+  }
+  await new Promise(res => { rec.onstop = res; rec.stop(); });
+  const blob = new Blob(chunks, { type: mime });
+  window.__recState = { status: 'encoding', bytes: blob.size };
+  // envia para o servidor local (evita limite de download do app)
+  const res = await fetch('/upload?name=mc-modded-server.webm', { method: 'POST', body: blob });
+  const txtRes = await res.text();
+  window.__recState = { status: 'done', bytes: blob.size, frames: totalFrames, server: txtRes };
+}
+window.startRecording = recordAll;
+
+/* Gravação em TEMPO REAL: o canvas é amostrado pelo captureStream a 30 fps e
+   a animação avança com o relógio real. Garante 1 quadro por intervalo. */
+async function recordRealTime(limitSec, fileName) {
+  window.__recState = { status: 'starting' };
+  const dur = Math.min(limitSec || TOTAL, TOTAL);
+  const stream = cv.captureStream(FPS);
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  const mime = types.find(t => MediaRecorder.isTypeSupported(t));
+  if (!mime) { window.__recState = { status: 'error', error: 'mime não suportado' }; return; }
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.start(1000);
+  const t0 = performance.now();
+  let lastDraw = 0;
+  while (true) {
+    const el = performance.now() - t0;
+    if (el >= dur * 1000) break;
+    // redesenha no máximo ~120x/s (o suficiente para o canvas nunca ficar velho)
+    if (el - lastDraw >= 8) { render(el / 1000); lastDraw = el; }
+    if (Math.floor(el / 1000) % 10 === 0) {
+      window.__recState = { status: 'recording', elapsed: Math.round(el/1000), total: Math.round(dur), pct: +(el/(dur*1000)*100).toFixed(1) };
+    }
+    await yieldTick();
+  }
+  render(dur);
+  await new Promise(res => { rec.onstop = res; rec.stop(); });
+  const blob = new Blob(chunks, { type: mime });
+  window.__recState = { status: 'encoding', bytes: blob.size };
+  const res = await fetch('/upload?name=' + (fileName || 'mc-modded-server.webm'), { method: 'POST', body: blob });
+  const body = await res.text();
+  window.__recState = { status: 'done', bytes: blob.size, server: body, duration: dur };
+}
+window.startRecordingRT = recordRealTime;
+</script>
+</body>
+</html>

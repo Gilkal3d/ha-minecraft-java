@@ -6,6 +6,23 @@ com suporte a **Fabric, NeoForge, Forge, Paper, Purpur e Vanilla**, com
 
 ## Add-ons
 
+### 🎬 Vídeo explicativo
+
+Vídeo de ~4 min 30 s mostrando **como o sistema funciona por dentro**:
+arquitetura, boot do container, camadas de configuração, as 8 abas do painel,
+RCON, backups, mods, integração com o Home Assistant e permissões.
+
+**Narrado em português (Brasil)**, com a narração sincronizada cena a cena.
+
+<video controls preload="metadata" width="100%" poster="">
+  <source src="docs/video/MC-Modded-Server-Explicacao.mp4" type="video/mp4">
+  Seu navegador não reproduz vídeo.
+  <a href="docs/video/MC-Modded-Server-Explicacao.mp4">Baixar o vídeo (MP4, 50 MB)</a>.
+</video>
+
+👉 [Assistir ou baixar o MP4](docs/video/MC-Modded-Server-Explicacao.mp4) ·
+como regerar: [`docs/video/README.md`](docs/video/README.md)
+
 ### MC Modded Server
 
 Servidor Minecraft Java moddável com interface gráfica:

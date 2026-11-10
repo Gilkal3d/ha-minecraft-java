@@ -1,2 +1,8 @@
 # Servidor antigo do usuário (não faz parte do add-on)
 MineServer/
+
+# Artefatos do vídeo: regeneráveis pelo script e pesando MB
+# (o MP4 final COM narração é versionado de propósito)
+docs/video/narracao.wav
+docs/video/*-sem-narracao.mp4
+docs/video/*.mp4.part
